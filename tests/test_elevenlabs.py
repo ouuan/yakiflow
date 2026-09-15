@@ -417,9 +417,9 @@ def test_convert_estimate_follows_the_parallel_segment_split() -> None:
     # audio arrives with the extra workers and the estimate stays flat.
     assert estimate_convert_seconds(480.0, 0) == estimate_convert_seconds(1920.0, 0)
     # Past four segments there is no further speedup: twice the audio, twice
-    # the transcription time.
+    # the transcription time, with the same 2 s request overhead.
     saturated = estimate_convert_seconds(3840.0, 0)
-    assert estimate_convert_seconds(7680.0, 0) == pytest.approx(2 * saturated - 8.0)
+    assert estimate_convert_seconds(7680.0, 0) == pytest.approx(2 * saturated - 2.0)
 
 
 def test_convert_estimate_counts_the_upload() -> None:
@@ -433,7 +433,9 @@ def test_convert_estimate_counts_the_upload() -> None:
 
 def test_convert_estimate_holds_a_floor_and_survives_unknown_duration() -> None:
     assert estimate_convert_seconds(2.0, 64000) == 15.0
-    assert estimate_convert_seconds(None, 0) > 15.0
+    # The 600 s fallback takes 12 s across two segments at 25x speed;
+    # adding 2 s of overhead still leaves it below the floor.
+    assert estimate_convert_seconds(None, 0) == 15.0
 
 
 def test_transcribe_sends_the_documented_parameters(tmp_path: Path) -> None:

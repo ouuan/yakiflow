@@ -586,7 +586,7 @@ _MAX_SEGMENTS = 4
 # Published measurements put Scribe v2 near 55x real time on a ten-minute
 # file, which the split above runs as two segments; that is ~27x per segment,
 # rounded down here for headroom against a busy queue.
-_SEGMENT_SPEED = 20.0
+_SEGMENT_SPEED = 25.0
 
 # The upload is the other half of the wall clock: the audio handed to this
 # backend is 16 kHz mono PCM, so an hour of it is ~115 MB. Assume a modest
@@ -594,7 +594,7 @@ _SEGMENT_SPEED = 20.0
 _UPLOAD_BYTES_PER_SECOND = 2_000_000.0
 
 # Request setup plus the queue wait before a segment starts.
-_REQUEST_OVERHEAD_SECONDS = 8.0
+_REQUEST_OVERHEAD_SECONDS = 2.0
 
 
 def estimate_convert_seconds(duration: float | None, size_bytes: int) -> float:
