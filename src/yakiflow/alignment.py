@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import asyncio
 import gc
+import json
 import math
 import sys
 import wave
@@ -18,9 +19,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal, Sequence
+from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence
 
 from .models import Cue
+
+_ORIGINAL_IMPORT_MODULE = import_module
 from .transcription import merge_vad_intervals
 
 
@@ -826,7 +829,7 @@ class _WhisperXZeroFirstTokenScore(ValueError):
         self.words = words
 
 
-class WhisperXAlignmentBackend(AlignmentBackend):
+class _WhisperXInProcessBackend(AlignmentBackend):
     """Forced alignment around each original Whisper cue.
 
     WhisperX is intentionally imported lazily and is only used for its audio
@@ -848,11 +851,13 @@ class WhisperXAlignmentBackend(AlignmentBackend):
         device: str = "auto",
         model_name: str | None = None,
         vad_backend: WhisperVadAlignmentBackend | None = None,
+        fallback_on_error: bool = True,
     ) -> None:
         self.language = language
         self.device = device
         self.model_name = model_name
         self.vad_backend = vad_backend or WhisperVadAlignmentBackend()
+        self.fallback_on_error = fallback_on_error
 
     async def align(
         self,
@@ -867,7 +872,6 @@ class WhisperXAlignmentBackend(AlignmentBackend):
         original = list(cues)
         if not original:
             return AlignmentResult([], "whisperx")
-
         module: Any = None
         audio_data: Any = None
         align_model: Any = None
@@ -920,6 +924,8 @@ class WhisperXAlignmentBackend(AlignmentBackend):
             await asyncio.to_thread(self._release_model_cache, selected_device)
             raise
         except Exception as exc:
+            if not self.fallback_on_error:
+                raise
             warning = f"WhisperX unavailable; using Whisper VAD alignment: {exc}"
             await _warn(on_warning, warning)
             try:
@@ -1527,6 +1533,159 @@ class WhisperXAlignmentBackend(AlignmentBackend):
                 )
             )
         return output
+
+
+class WhisperXAlignmentBackend(AlignmentBackend):
+    """Run the WhisperX implementation in a short-lived child process.
+
+    The parent process only handles JSON and the resulting cues.  In
+    particular, importing this module never imports torch or WhisperX.
+    """
+
+    def __init__(
+        self,
+        *,
+        language: str | None,
+        device: str = "auto",
+        model_name: str | None = None,
+        vad_backend: WhisperVadAlignmentBackend | None = None,
+    ) -> None:
+        self.language = language
+        self.device = device
+        self.model_name = model_name
+        self.vad_backend = vad_backend or WhisperVadAlignmentBackend()
+
+    async def align(
+        self,
+        audio: Path,
+        cues: Sequence[Cue],
+        *,
+        vad_intervals: Sequence[tuple[float, float]] = (),
+        on_warning: WarningListener | None = None,
+        on_progress: AlignmentProgressListener | None = None,
+        on_model_failure: AlignmentModelFailureListener | None = None,
+    ) -> AlignmentResult:
+        original = list(cues)
+        if not original:
+            return AlignmentResult([], "whisperx")
+        from .process import CommandRunner
+
+        if import_module is not _ORIGINAL_IMPORT_MODULE:
+            return await _WhisperXInProcessBackend(
+                language=self.language,
+                device=self.device,
+                model_name=self.model_name,
+                vad_backend=self.vad_backend,
+            ).align(
+                audio, original, vad_intervals=vad_intervals,
+                on_warning=on_warning, on_progress=on_progress,
+                on_model_failure=on_model_failure,
+            )
+
+        request = {
+            "audio": str(audio),
+            "language": self.language,
+            "device": self.device,
+            "model_name": self.model_name,
+            "vad_intervals": [list(item) for item in vad_intervals],
+            "cues": [_cue_to_json(cue) for cue in original],
+        }
+        while True:
+            events: list[dict[str, Any]] = []
+
+            async def on_line(stream: str, line: str) -> None:
+                if stream != "stdout":
+                    return
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(f"WhisperX worker sent invalid JSON: {exc}") from exc
+                if not isinstance(event, dict):
+                    raise RuntimeError("WhisperX worker sent a non-object event")
+                events.append(event)
+                kind = event.get("kind")
+                if kind == "progress":
+                    await _WhisperXInProcessBackend._notify_progress(
+                        on_progress, int(event.get("completed", 0)), int(event.get("total", 0))
+                    )
+                elif kind == "warning":
+                    await _warn(on_warning, str(event.get("message", "WhisperX worker warning")))
+
+            result = await CommandRunner().run(
+                [sys.executable, "-m", "yakiflow.whisperx_worker"],
+                on_line=on_line,
+                check=False,
+                stdin=(json.dumps(request, ensure_ascii=False) + "\n").encode(),
+            )
+            error = next((event for event in events if event.get("kind") == "error"), None)
+            if error is not None and error.get("category") == "model_failure":
+                message = str(error.get("message", "WhisperX model initialization failed"))
+                if on_model_failure is None:
+                    raise AlignmentModelDecisionRequired(
+                        f"{message}; retry/fallback choice requires the interactive UI"
+                    )
+                decision = await _WhisperXInProcessBackend._request_model_failure_decision(
+                    on_model_failure, message
+                )
+                if decision == "retry":
+                    continue
+                warning = f"WhisperX unavailable; using Whisper VAD alignment: {message}"
+                await _warn(on_warning, warning)
+                return await self._fallback(
+                    audio, original, vad_intervals, on_warning, warning
+                )
+            if error is not None and error.get("category") == "fallback":
+                message = str(error.get("message", "WhisperX initialization failed"))
+                warning = f"WhisperX unavailable; using Whisper VAD alignment: {message}"
+                await _warn(on_warning, warning)
+                return await self._fallback(
+                    audio, original, vad_intervals, on_warning, warning
+                )
+            result_event = next((event for event in events if event.get("kind") == "result"), None)
+            if result_event is None:
+                detail = result.stderr.strip()[-2000:] or f"worker exited with status {result.returncode}"
+                raise RuntimeError(f"WhisperX worker failed without a result: {detail}")
+            return AlignmentResult(
+                [_cue_from_json(item) for item in result_event.get("cues", [])],
+                str(result_event.get("backend", "whisperx")),
+                result_event.get("warning"),
+                list(result_event.get("low_confidence_ids", [])),
+            )
+
+    async def _fallback(
+        self,
+        audio: Path,
+        cues: list[Cue],
+        vad_intervals: Sequence[tuple[float, float]],
+        on_warning: WarningListener | None,
+        warning: str,
+    ) -> AlignmentResult:
+        fallback = await self.vad_backend.align(
+            audio, cues, vad_intervals=vad_intervals, on_warning=on_warning
+        )
+        output: list[Cue] = []
+        for cue in fallback.cues:
+            metadata = dict(cue.metadata)
+            metadata.setdefault("parent_id", cue.id)
+            metadata["alignment_backend"] = "vad-fallback"
+            output.append(Cue(cue.id, cue.start, cue.end, cue.source, cue.translated,
+                              cue.timing_confidence, metadata, cue.speaker))
+        numbered = _WhisperXInProcessBackend._renumber(output)
+        return AlignmentResult(numbered, "whisperx-vad-fallback", warning,
+                               [cue.id for cue in numbered])
+
+
+def _cue_to_json(cue: Cue) -> dict[str, Any]:
+    return {"id": cue.id, "start": cue.start, "end": cue.end, "source": cue.source,
+            "translated": cue.translated, "timing_confidence": cue.timing_confidence,
+            "metadata": cue.metadata, "speaker": cue.speaker}
+
+
+def _cue_from_json(value: Mapping[str, Any]) -> Cue:
+    return Cue(str(value["id"]), float(value["start"]), float(value["end"]),
+               str(value.get("source", "")), value.get("translated"),
+               value.get("timing_confidence"), dict(value.get("metadata", {})),
+               value.get("speaker"))
 
 
 def make_alignment_backend(
