@@ -4,6 +4,8 @@ import shutil
 import shlex
 import subprocess
 import importlib.util
+import json
+import sys
 from dataclasses import dataclass
 from typing import Sequence
 from urllib.parse import urlparse
@@ -53,6 +55,34 @@ def _probe_server_url(url: str, timeout: float = 5.0) -> Check:
     return Check(
         "whisper-server URL", True, f"{url} responded with HTTP {response.status}"
     )
+
+
+def _probe_cuda() -> tuple[bool, str]:
+    """Probe torch in an isolated interpreter so the CLI stays torch-free."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "yakiflow.whisperx_worker", "--probe"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "CUDA probe timed out after 30 seconds"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"CUDA probe failed: {exc}"
+    lines = (result.stdout or "").splitlines()
+    try:
+        event = json.loads(lines[-1]) if lines else {}
+    except json.JSONDecodeError:
+        event = {}
+    if isinstance(event, dict) and event.get("kind") == "probe":
+        return bool(event.get("cuda_available")), str(event.get("detail", "CUDA unavailable"))
+    if result.returncode == 0:
+        return False, "CUDA unavailable"
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    return False, detail[-1] if detail else f"CUDA probe exited with {result.returncode}"
 
 
 def run_doctor(
@@ -142,14 +172,7 @@ def run_doctor(
                 ),
             )
         )
-        cuda_available = False
-        try:
-            import torch
-
-            cuda_available = bool(torch.cuda.is_available())
-            torch_detail = "CUDA available" if cuda_available else "CUDA unavailable"
-        except (ImportError, RuntimeError) as exc:
-            torch_detail = str(exc)
+        cuda_available, torch_detail = _probe_cuda()
         if settings.alignment.device == "cuda":
             checks.append(Check("WhisperX CUDA", cuda_available, torch_detail))
         else:
