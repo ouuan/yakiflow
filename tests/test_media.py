@@ -238,7 +238,7 @@ def test_stream_decodes_only_the_audio_it_has_not_processed(
         ).acquire_stream(MediaSource.parse("https://example.test/live"), on_chunk)
     )
 
-    assert starts == [0, 10, 25, 40]
+    assert starts == [0, 10, 25, 40, 55]  # includes the final 14.99 seconds
     # Each pass resumes five seconds before the audio it still owes instead of
     # decoding the whole download over again.
     assert runner.tail_seeks[:2] == [0.0, 25.0]

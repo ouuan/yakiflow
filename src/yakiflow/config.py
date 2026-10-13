@@ -16,7 +16,7 @@ DEFAULT_MODEL_NAME = "ggml-large-v3-turbo-q5_0.bin"
 # Stamped into every work directory's stored configuration. A work directory
 # whose stamp differs was created by an incompatible yakiflow and must be
 # finished by the version that created it.
-SETTINGS_SCHEMA_VERSION = 2
+SETTINGS_SCHEMA_VERSION = 3
 
 TRANSCRIPTION_BACKENDS = (
     "whisper-cli",
@@ -57,6 +57,7 @@ def _grp(cls: type) -> Any:
 @dataclass(frozen=True, slots=True)
 class TranscriptionSettings:
     backend: str = "whisper-cli"
+    stream_backend: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,8 @@ class WhisperSettings:
     cli: str = "whisper-cli"
     server: str = "whisper-server"
     server_url: str | None = None
+    stream_chunk_seconds: int = 15
+    stream_context_seconds: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,13 +95,6 @@ class AlignmentSettings:
     backend: str | None = None
     device: str = "auto"
     model: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class StreamSettings:
-    enabled: bool = False
-    chunk_seconds: int = 15
-    context_seconds: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +124,23 @@ class DraftAgentSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class StreamAgentSettings:
+    backend: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    extra_options: tuple[str, ...] | None = _argv(None)
+    workers: int | None = None
+    batch_size: int | None = None
+    preceding_context: int | None = None
+    following_context: int | None = None
+    word_batch_size: int | None = None
+    word_following_context: int | None = None
+    timeout_seconds: float | None = None
+    max_attempts: int | None = None
+    retry_delay_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FinalAgentSettings:
     backend: str | None = None
     model: str | None = None
@@ -143,6 +156,7 @@ class AgentSettings:
     extra_options: tuple[str, ...] | None = _argv(None)
     draft: DraftAgentSettings = _grp(DraftAgentSettings)
     final: FinalAgentSettings = _grp(FinalAgentSettings)
+    stream: StreamAgentSettings = _grp(StreamAgentSettings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,7 +197,7 @@ class Settings:
     whisper: WhisperSettings = _grp(WhisperSettings)
     elevenlabs: ElevenLabsSettings = _grp(ElevenLabsSettings)
     alignment: AlignmentSettings = _grp(AlignmentSettings)
-    stream: StreamSettings = _grp(StreamSettings)
+    stream: bool = False
     subtitles: SubtitleSettings = _grp(SubtitleSettings)
     agent: AgentSettings = _grp(AgentSettings)
     review: ReviewSettings = _grp(ReviewSettings)
@@ -225,9 +239,16 @@ class Settings:
                 else "vad"
             ),
         )
+        draft = self._resolved_stage(self.agent.draft, "draft")
+        stream_values = {f.name: (getattr(self.agent.stream, f.name)
+                         if getattr(self.agent.stream, f.name) is not None
+                         else getattr(draft, f.name)) for f in fields(draft)}
+        if self.agent.stream.backend and self.agent.stream.backend != draft.backend and not self.agent.stream.model:
+            stream_values["model"] = _STAGE_MODEL_DEFAULTS["draft"].get(self.agent.stream.backend)
         agent = replace(
             self.agent,
-            draft=self._resolved_stage(self.agent.draft, "draft"),
+            draft=draft,
+            stream=StreamAgentSettings(**stream_values),
             final=self._resolved_stage(self.agent.final, "final"),
         )
         return replace(
@@ -239,10 +260,22 @@ class Settings:
                 path.expanduser().resolve() for path in self.context_files
             ),
             work_dir=absolute(self.work_dir),
+            transcription=replace(self.transcription, stream_backend=self.transcription.stream_backend or ("whisper-server" if self.transcription.backend.startswith("whisper") else "elevenlabs-stream")),
             whisper=whisper,
             elevenlabs=elevenlabs,
             alignment=alignment,
             agent=agent,
+        )
+
+    def for_stream(self) -> Settings:
+        """Select the capture backend and agent without changing saved batch settings."""
+        return replace(
+            self,
+            transcription=replace(self.transcription, backend=self.transcription.stream_backend),
+            agent=replace(self.agent, draft=DraftAgentSettings(**{
+                f.name: getattr(self.agent.stream, f.name) for f in fields(DraftAgentSettings)
+            })),
+            alignment=replace(self.alignment, backend="none"),
         )
 
     def _resolved_stage(
@@ -299,8 +332,8 @@ _RELOCATED = {
     "review_open_command": "review.open-command",
     "auto_open_video": "review.auto-open-video",
     "video_open_command": "review.video-open-command",
-    "stream_chunk_seconds": "stream.chunk-seconds",
-    "stream_context_seconds": "stream.context-seconds",
+    "stream_chunk_seconds": "whisper.stream-chunk-seconds",
+    "stream_context_seconds": "whisper.stream-context-seconds",
     "ffmpeg": "commands.ffmpeg",
     "yt_dlp": "commands.yt-dlp",
     "yt_dlp_options": "commands.yt-dlp-options",
@@ -527,6 +560,12 @@ def _require_non_negative(value: float, name: str) -> None:
 
 
 def validate_run_settings(settings: Settings) -> None:
+    if not isinstance(settings.stream, bool):
+        raise ValueError("stream must be a boolean; the old [stream] table is unsupported")
+    if settings.transcription.stream_backend not in {"whisper-cli", "whisper-server", "elevenlabs-stream"}:
+        raise ValueError("transcription.stream-backend must be Whisper or a realtime backend")
+    if settings.stream:
+        settings = settings.for_stream()
     if not settings.target_language:
         raise ValueError("target-language is required (-t/--target-language)")
     if not settings.source_language:
@@ -614,5 +653,5 @@ def validate_run_settings(settings: Settings) -> None:
             "review.open-command is required when review.display-mode is "
             "open or both"
         )
-    _require_positive(settings.stream.chunk_seconds, "stream.chunk-seconds")
-    _require_non_negative(settings.stream.context_seconds, "stream.context-seconds")
+    _require_positive(settings.whisper.stream_chunk_seconds, "whisper.stream-chunk-seconds")
+    _require_non_negative(settings.whisper.stream_context_seconds, "whisper.stream-context-seconds")

@@ -50,17 +50,17 @@ def test_config_priority(tmp_path: Path) -> None:
 
 def test_dedicated_flags_outrank_c_overrides(tmp_path: Path) -> None:
     settings = load_settings(
-        {"target_language": "ja", "stream": {"enabled": True}},
+        {"target_language": "ja", "stream": True},
         user_file=MISSING,
         project_file=MISSING,
         cli_config={
             "target-language": "fr",
-            "stream": {"enabled": False, "chunk-seconds": 30},
+            "stream": False, "whisper": {"stream-chunk-seconds": 30},
         },
     )
     assert settings.target_language == "ja"
-    assert settings.stream.enabled is True
-    assert settings.stream.chunk_seconds == 30
+    assert settings.stream is True
+    assert settings.whisper.stream_chunk_seconds == 30
 
 
 def test_profiles_deep_merge_at_leaf_level(tmp_path: Path) -> None:
@@ -70,7 +70,7 @@ def test_profiles_deep_merge_at_leaf_level(tmp_path: Path) -> None:
         'target-language = "fr"\n'
         '[agent]\nbackend = "codex"\n'
         '[agent.draft]\nworkers = 2\nextra-options = ["--user-base"]\n'
-        '[profiles.stream]\nstream.enabled = true\n'
+        '[profiles.stream]\nstream = true\n'
         'agent.draft.workers = 3\n'
         'agent.draft.extra-options = ["-c", "service_tier=fast"]\n'
     )
@@ -87,7 +87,7 @@ def test_profiles_deep_merge_at_leaf_level(tmp_path: Path) -> None:
         profile="stream",
     )
 
-    assert settings.stream.enabled is True
+    assert settings.stream is True
     assert settings.agent.backend == "codex"
     # The project base's batch-size survives the profile's sibling-key edits.
     assert settings.agent.draft.batch_size == 10
@@ -100,18 +100,18 @@ def test_profiles_deep_merge_at_leaf_level(tmp_path: Path) -> None:
 def test_unselected_profiles_have_no_effect(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
-        '[stream]\nenabled = false\n'
-        '[profiles.streaming]\nstream.enabled = true\n'
+        'stream = false\n'
+        '[profiles.streaming]\nstream = true\n'
     )
 
     settings = load_settings(user_file=MISSING, project_file=config)
 
-    assert settings.stream.enabled is False
+    assert settings.stream is False
 
 
 def test_unknown_profile_is_rejected(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
-    config.write_text('[profiles.stream]\nstream.enabled = true\n')
+    config.write_text('[profiles.stream]\nstream = true\n')
 
     with pytest.raises(ValueError, match="unknown profile 'missing'"):
         load_settings(user_file=MISSING, project_file=config, profile="missing")
@@ -158,18 +158,18 @@ def test_relocated_flat_key_names_its_new_home(tmp_path: Path) -> None:
 
 def test_scalar_for_table_is_reported(tmp_path: Path) -> None:
     project = tmp_path / "project.toml"
-    project.write_text('stream = true\n')
+    project.write_text('transcription = true\n')
     with pytest.raises(
-        ValueError, match=r"'stream' is a table of settings, not a single value"
+        ValueError, match=r"'transcription' is a table of settings, not a single value"
     ):
         load_settings(project_file=project, user_file=MISSING)
 
 
 def test_table_for_scalar_is_reported(tmp_path: Path) -> None:
     project = tmp_path / "project.toml"
-    project.write_text('[stream.chunk-seconds]\nvalue = 15\n')
+    project.write_text('[whisper.stream-chunk-seconds]\nvalue = 15\n')
     with pytest.raises(
-        ValueError, match=r"'stream.chunk-seconds' is a single setting, not a table"
+        ValueError, match=r"'whisper.stream-chunk-seconds' is a single setting, not a table"
     ):
         load_settings(project_file=project, user_file=MISSING)
 
@@ -311,7 +311,7 @@ def test_stored_settings_round_trip(tmp_path: Path) -> None:
     original = _validatable(
         context_files=[str(tmp_path / "notes.txt")],
         elevenlabs={"api-key": "sk-stored"},
-        stream={"enabled": True},
+        stream=True,
     )
     stored = asdict(original)
 
@@ -388,7 +388,7 @@ def test_every_backend_may_stream(
     validate_run_settings(
         _validatable(
             transcription={"backend": backend},
-            stream={"enabled": stream_enabled},
+            stream=stream_enabled,
         )
     )
 
@@ -489,8 +489,8 @@ def test_whisper_server_url_must_be_http(monkeypatch: pytest.MonkeyPatch) -> Non
         ({"subtitles": {"max-cue-chars": 4}}, "max-cue-chars"),
         ({"elevenlabs": {"num-speakers": 0}}, "num-speakers"),
         ({"elevenlabs": {"num-speakers": 33}}, "num-speakers"),
-        ({"stream": {"chunk-seconds": 0}}, "stream.chunk-seconds"),
-        ({"stream": {"context-seconds": -1}}, "stream.context-seconds"),
+        ({"whisper": {"stream-chunk-seconds": 0}}, "whisper.stream-chunk-seconds"),
+        ({"whisper": {"stream-context-seconds": -1}}, "whisper.stream-context-seconds"),
         ({"output_mode": "both"}, "output-mode"),
     ],
 )
@@ -686,5 +686,26 @@ def test_key_command_output_is_stripped(monkeypatch: pytest.MonkeyPatch) -> None
     assert elevenlabs_api_key(settings) == "sk-cmd"
 
 
-def test_settings_schema_version_is_two() -> None:
-    assert SETTINGS_SCHEMA_VERSION == 2
+def test_settings_schema_version_is_three() -> None:
+    assert SETTINGS_SCHEMA_VERSION == 3
+
+
+def test_stream_mapping_and_agent_inheritance():
+    settings = _validatable(agent={"backend": "codex", "draft": {"batch_size": 7},
+                                   "stream": {"backend": "claude", "workers": 2}})
+    assert settings.transcription.stream_backend == "whisper-server"
+    assert settings.agent.stream.model == "sonnet"
+    assert settings.agent.stream.batch_size == 7
+    assert settings.agent.stream.workers == 2
+    assert settings.for_stream().agent.draft.backend == "claude"
+    assert _validatable(transcription={"backend": "elevenlabs"}).transcription.stream_backend == "elevenlabs-stream"
+    assert settings.resolved() == settings
+
+
+def test_old_stream_configuration_is_rejected(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text("[stream]\nenabled = true\n")
+    with pytest.raises(ValueError, match="single setting"):
+        load_settings(user_file=MISSING, project_file=config)
+    with pytest.raises(ValueError, match="realtime backend"):
+        validate_run_settings(_validatable(transcription={"stream_backend": "elevenlabs"}))

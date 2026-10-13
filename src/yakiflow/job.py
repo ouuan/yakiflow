@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import uuid
 from bisect import bisect_left
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable, Mapping, Sequence
 
@@ -72,6 +72,10 @@ from .translation import AgentBackend, TranslationPipeline, make_backend
 EventListener = Callable[[JobEvent], Awaitable[None] | None]
 
 _DRAFT_PARTIAL_SUFFIX = ".draft.incomplete.ass"
+
+
+class StreamExit(Exception):
+    """Capture was preserved for a later completion decision."""
 
 
 class _ModelDownloadAbandoned(Exception):
@@ -208,7 +212,10 @@ class YakiFlowJob:
             )
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.input_value = input_value
+        self._batch_settings = settings
         self.settings = settings
+        self.stream_completion_listener = None
+        self._injected_backend = backend
         self.context_files = (
             self._staged_context_files()
             if _resume
@@ -562,7 +569,7 @@ class YakiFlowJob:
         self._progress_plan = make_progress_plan(
             needs_model=needs_model,
             is_url=source.is_url,
-            streaming=self.settings.stream.enabled,
+            streaming=self.settings.stream,
             needs_acquire=needs_acquire,
             needs_transcription=needs_transcription,
             needs_translation=(
@@ -656,10 +663,14 @@ class YakiFlowJob:
                     stage="publish", estimated_remaining=0,
                 )
                 return self.outputs
+            if self.settings.stream and self.db.get_checkpoint("stream_completion_choice") != "retranscribe":
+                self._select_settings(self._batch_settings.for_stream())
             self._configure_progress()
             await self._ensure_model()
             artifact = await self._media_stage()
             self._artifact = artifact
+            if self._batch_settings.stream:
+                await self._complete_stream(artifact)
             cues = await self._transcription_stage(artifact)
             if not self.db.get_checkpoint("alignment_complete", False):
                 cues = await self._translation_stage(artifact, cues)
@@ -674,6 +685,9 @@ class YakiFlowJob:
                 stage="publish", estimated_remaining=0,
             )
             return self.outputs
+        except StreamExit:
+            self.db.set_status(JobStatus.INTERRUPTED)
+            raise
         except asyncio.CancelledError:
             self.db.set_status(JobStatus.INTERRUPTED, "interrupted")
             await self.emit("interrupted", f"job preserved at {self.work_dir}")
@@ -682,6 +696,50 @@ class YakiFlowJob:
             self.db.set_status(JobStatus.FAILED, str(exc))
             await self.emit("failed", str(exc), error_traceback=traceback.format_exc())
             raise
+
+    def _select_settings(self, settings: Settings) -> None:
+        self.settings = settings
+        self.backend = self._injected_backend or make_backend(
+            settings.agent.draft.backend or "", self.work_dir, self.runner,
+            options=settings.agent.draft.extra_options or (),
+        )
+
+    async def _complete_stream(self, artifact: MediaArtifact) -> None:
+        choice = self.db.get_checkpoint("stream_completion_choice")
+        if choice is None:
+            available = bool(self.db.list_cues() or self.db.list_transcript_words())
+            choice = (await self.stream_completion_listener(available)
+                      if self.stream_completion_listener else "retranscribe")
+            if choice == "exit":
+                raise StreamExit
+            if choice not in {"review", "retranscribe"} or (choice == "review" and not available):
+                raise ValueError("invalid stream completion choice")
+            if choice == "retranscribe":
+                from .config import validate_run_settings
+                from .doctor import fatal_failures, run_doctor
+                batch = replace(self._batch_settings, stream=False)
+                validate_run_settings(batch)
+                failures = fatal_failures(await asyncio.to_thread(
+                    run_doctor, batch, source_is_url=False
+                ))
+                if failures:
+                    raise RuntimeError("full-recording resource check failed: " + "; ".join(
+                        f"{check.name}: {check.detail}" for check in failures
+                    ))
+            self.db.checkpoint("stream_completion_choice", choice)
+        if choice == "retranscribe":
+            self._select_settings(replace(self._batch_settings, stream=False))
+            if not self.db.get_checkpoint("stream_results_reset"):
+                self.db.reset_transcription()
+                self._word_timeline = None
+                self.db.checkpoint("stream_results_reset", True)
+                await self.emit("timeline-replaced", "starting full-recording transcription", cues=[])
+            await self._ensure_model()
+        else:
+            self._select_settings(self._batch_settings.for_stream())
+            self.db.checkpoint("transcribed", True)
+            # Review keeps the original live timestamps, including cue ends.
+            self.db.checkpoint("stream_keep_timing", True)
 
     async def _ensure_model(self) -> None:
         if not needs_local_whisper(self.settings):
@@ -775,7 +833,7 @@ class YakiFlowJob:
             on_warning=media_warning,
             on_media_file=media_file,
         )
-        if not self.settings.stream.enabled:
+        if not self.settings.stream:
             artifact = await acquirer.acquire(source)
             await self._detect_play_res(artifact.media_path)
             await self._finish_stage("acquire", "media ready")
@@ -819,6 +877,12 @@ class YakiFlowJob:
             translated_ids = {cue.id for cue in batch}
             await self._emit_agent_cues(cue for cue in updated if cue.id in translated_ids)
 
+        async def live_word_batch(added: Sequence[Cue], removed_ids: Sequence[str]) -> None:
+            view = self._word_view()
+            view.apply(added, removed_ids)
+            await self._write_partial(partial_path, view.cues())
+            await self._emit_word_timeline(view.cues())
+
         async def chunk(excerpt: Path, start: float) -> None:
             nonlocal completed_chunks, last_timeline_state, last_progress_key
             new_cues = await transcriber.submit_chunk(excerpt, start)
@@ -832,8 +896,16 @@ class YakiFlowJob:
             ]
             if timeline_state != last_timeline_state:
                 last_timeline_state = timeline_state
-                self.db.replace_transcript(transcriber.chunk_cues)
-                timeline = self.db.list_cues(stable_only=True)
+                if self._word_mode:
+                    self.db.delete_cues([cue.id for cue in self.db.list_cues() if is_preview_cue_id(cue.id)])
+                    self.db.upsert_cues(transcriber.chunk_cues, stable=False)
+                    self._word_timeline = None
+                    timeline = self._word_view().cues()
+                    translation_tasks[:] = [task for task in translation_tasks if not task.done()]
+                    translation_tasks.extend(pipeline.dispatch_ready_word_batches(live_word_batch))
+                else:
+                    self.db.replace_transcript(transcriber.chunk_cues)
+                    timeline = self.db.list_cues(stable_only=True)
                 await self._write_partial(partial_path, timeline)
                 for cue in new_cues:
                     await self.emit("transcript", "live subtitle", cue=cue)
@@ -847,9 +919,9 @@ class YakiFlowJob:
                 translation_tasks[:] = [
                     task for task in translation_tasks if not task.done()
                 ]
-                for batch, context, following in self._missing_translation_batches(
+                for batch, context, following in ([] if self._word_mode else self._missing_translation_batches(
                     timeline, excluded_ids=scheduled_translation_ids
-                ):
+                )):
                     scheduled_translation_ids.update(cue.id for cue in batch)
                     translation_tasks.append(
                         asyncio.create_task(translate_live(batch, context, following))
@@ -880,6 +952,14 @@ class YakiFlowJob:
                 # On success, let the outstanding previews land so the partial
                 # file on disk matches the transcript the stream ended with.
                 await asyncio.gather(*translation_tasks, return_exceptions=True)
+        if self._word_mode:
+            self.db.delete_cues([cue.id for cue in self.db.list_cues() if is_preview_cue_id(cue.id)])
+            self.db.upsert_cues(transcriber.chunk_cues, stable=False)
+            self._word_timeline = None
+        else:
+            self.db.replace_transcript(transcriber.chunk_cues)
+        await self._write_partial(partial_path, transcriber.chunk_cues)
+        self.db.checkpoint("stream_capture_complete", True)
         await self._detect_play_res(artifact.media_path)
         await self._finish_stage("acquire", "stream acquisition complete")
         return artifact
@@ -899,7 +979,7 @@ class YakiFlowJob:
                 await self._finish_stage("transcribe", "transcription ready")
                 return cues
         resume_from = self._transcription_resume_cues()
-        if self.settings.stream.enabled and not self.db.get_checkpoint("transcription_started"):
+        if self.settings.stream and not self.db.get_checkpoint("transcription_started"):
             # Streaming cues use positional IDs that the authoritative
             # full-audio pass will reuse. Their translations belong to the
             # provisional source text and must not survive that ID collision.
@@ -1315,6 +1395,9 @@ class YakiFlowJob:
 
     async def _alignment_stage(self, artifact: MediaArtifact, cues: Sequence[Cue]) -> list[Cue]:
         self.db.set_status(JobStatus.ALIGNING)
+        if self.db.get_checkpoint("stream_keep_timing"):
+            self.db.replace_aligned_timeline(cues)
+            return list(cues)
         if self.db.get_checkpoint("alignment_complete", False):
             restored = self.db.list_cues(stable_only=True)
             await self._begin_stage("align", "using cached alignment")

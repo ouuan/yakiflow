@@ -146,7 +146,7 @@ Choose with `transcription.backend` (or `--transcription-backend`):
 | `elevenlabs` | ElevenLabs Scribe batch API, with speaker diarization | `yakiflow[elevenlabs]`, an API key |
 | `elevenlabs-stream` | ElevenLabs Scribe realtime API over WebSocket | `yakiflow[elevenlabs]`, an API key |
 
-All four backends work for both normal runs and `--stream` live capture. For
+Normal runs use `transcription.backend`; live capture uses `transcription.stream-backend`. For
 live streams, `whisper-server` and `elevenlabs-stream` give the fastest live
 preview; `whisper-cli` also works but reloads its model for every chunk, which
 makes the preview lag well behind the stream.
@@ -161,10 +161,15 @@ are produced together by the draft Agent from the word-level transcript.
 To use an already-running whisper-server instead of starting one:
 
 ```toml
+stream = false           # --stream / --no-stream
+
 [transcription]
+# stream-backend = "whisper-server"  # auto: Whisper → whisper-server; ElevenLabs → elevenlabs-stream
 backend = "whisper-server"
 
 [whisper]
+stream-chunk-seconds = 15
+stream-context-seconds = 5
 server-url = "http://127.0.0.1:8080"
 ```
 
@@ -340,6 +345,7 @@ output-dir = "./subtitles"
 # keep-workdir = false
 
 [transcription]
+# stream-backend = "whisper-server"  # auto: Whisper → whisper-server; ElevenLabs → elevenlabs-stream
 backend = "whisper-cli"   # whisper-cli | whisper-server | elevenlabs | elevenlabs-stream
 
 [whisper]                 # used by whisper-cli and whisper-server
@@ -363,10 +369,6 @@ backend = "whisper-cli"   # whisper-cli | whisper-server | elevenlabs | elevenla
 # device = "auto"         # auto | cpu | cuda (WhisperX)
 # model = "custom/model"  # override the WhisperX alignment model
 
-[stream]
-# enabled = false         # same as --stream
-# chunk-seconds = 15      # live transcription chunk length (unused by elevenlabs-stream)
-# context-seconds = 5     # audio overlap kept before each chunk (unused by elevenlabs-stream)
 
 [subtitles]
 # max-cue-seconds = 8.0   # longest single subtitle (ElevenLabs backends)
@@ -392,6 +394,9 @@ backend = "codex"         # codex | claude
 # timeout-seconds = 600
 # max-attempts = 3
 # retry-delay-seconds = 1
+
+[agent.stream]            # inherits every agent.draft field; backend changes select its draft model
+# batch-size = 5
 
 [agent.final]             # interactive review; overrides [agent]
 # backend = "…"
@@ -434,16 +439,14 @@ target-language = "zh-CN"
 [agent]
 backend = "codex"
 
-[profiles.stream]
-stream.enabled = true
-transcription.backend = "whisper-server"
-agent.draft.batch-size = 5
-agent.draft.extra-options = ["-c", "service_tier=fast"]
+[profiles.careful]
+agent.draft.effort = "medium"
+
 ```
 
 ```console
-yakiflow run 'https://example.com/live' --profile stream
-yakiflow doctor --profile stream
+yakiflow run input.mp4 --profile careful
+yakiflow doctor --profile careful
 ```
 
 Profiles may use dotted keys or nested tables and merge setting by setting: a
@@ -527,6 +530,8 @@ a model supported by your whisper.cpp build, then configure its path:
 
 ```toml
 [whisper]
+stream-chunk-seconds = 15
+stream-context-seconds = 5
 vad-model = "/absolute/path/to/ggml-silero-v6.2.0.bin"
 ```
 
@@ -595,3 +600,16 @@ each other stay that way; every other subtitle is aligned as usual.
 uv sync --extra dev
 uv run --extra dev pytest
 ```
+
+Live capture uses `agent.stream`, inheriting each field from `agent.draft`.
+After stopping, remaining audio and final service results are saved before a
+completion dialog offers review with live timestamps, full-recording
+retranscription with `agent.draft`, or exit with the recording and work directory
+preserved. Review uses `agent.final`. Resume repeats an unanswered dialog;
+a saved choice resumes its execution. Without an interactive terminal, the full
+recording is retranscribed automatically. Retranscription checks its resources
+before clearing live words, translations and agent coverage.
+
+Settings schema 3 rejects the old `[stream]` table and does not migrate old
+work directories; finish those with the version that created them. Whisper
+chunk/context settings now live in `[whisper]` and only affect Whisper capture.

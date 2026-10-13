@@ -78,7 +78,7 @@ def test_dedicated_flags_outrank_c_overrides_and_profiles(
     config = tmp_path / "config.toml"
     config.write_text(
         'target-language = "fr"\n'
-        '[profiles.stream]\nstream.enabled = true\ntarget-language = "ja"\n'
+        '[profiles.stream]\nstream = true\ntarget-language = "ja"\n'
     )
     args = cli._parser().parse_args([
         "run", "input.mp4",
@@ -92,7 +92,7 @@ def test_dedicated_flags_outrank_c_overrides_and_profiles(
     settings = cli._settings(args)
 
     assert settings.target_language == "zh-CN"
-    assert settings.stream.enabled is False
+    assert settings.stream is False
 
 
 def test_missing_config_file_is_an_error(tmp_path: Path, monkeypatch) -> None:

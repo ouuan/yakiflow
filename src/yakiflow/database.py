@@ -190,6 +190,15 @@ class JobDatabase:
             self.connection.execute("UPDATE cues SET stable=0, ordinal=ordinal+1000000")
             self._upsert_cues(merged, stable=True, reset_order=True)
 
+    def reset_transcription(self) -> None:
+        """Atomically remove all state belonging to the live transcript."""
+        with self.connection:
+            for table in ("cues", "transcript_words", "translation_batches"):
+                self.connection.execute(f"DELETE FROM {table}")
+            self.connection.execute("DELETE FROM checkpoints WHERE name NOT IN ("
+                "'memory_destination_snapshot', 'temporary_workdir', 'play_res', "
+                "'stream_capture_complete', 'stream_completion_choice')")
+
     def discard_provisional_transcript(self) -> None:
         """Hide live cues and their translations before the authoritative pass."""
         with self.connection:

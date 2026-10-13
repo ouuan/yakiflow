@@ -94,6 +94,7 @@ def run_doctor(
     was given; left unset, as it is for the ``doctor`` command, every check
     that some input could need stays fatal.
     """
+    settings = settings.for_stream() if settings.stream else settings
     checks: list[Check] = []
     _which(checks, "ffmpeg", settings.commands.ffmpeg)
     # Advisory: without it the subtitles are still written, only against the

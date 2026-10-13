@@ -153,10 +153,15 @@ yakiflow run video.mp4 \
 连接已运行的 whisper-server 而不是本地启动：
 
 ```toml
+stream = false           # --stream / --no-stream
+
 [transcription]
+# stream-backend = "whisper-server"  # auto: Whisper → whisper-server; ElevenLabs → elevenlabs-stream
 backend = "whisper-server"
 
 [whisper]
+stream-chunk-seconds = 15
+stream-context-seconds = 5
 server-url = "http://127.0.0.1:8080"
 ```
 
@@ -315,6 +320,7 @@ output-dir = "./subtitles"
 # keep-workdir = false
 
 [transcription]
+# stream-backend = "whisper-server"  # auto: Whisper → whisper-server; ElevenLabs → elevenlabs-stream
 backend = "whisper-cli"   # whisper-cli | whisper-server | elevenlabs | elevenlabs-stream
 
 [whisper]                 # whisper-cli 与 whisper-server 共用
@@ -338,10 +344,6 @@ backend = "whisper-cli"   # whisper-cli | whisper-server | elevenlabs | elevenla
 # device = "auto"         # auto | cpu | cuda（WhisperX）
 # model = "custom/model"  # 覆盖 WhisperX 对齐模型
 
-[stream]
-# enabled = false         # 等同于 --stream
-# chunk-seconds = 15      # 直播转录片段的时长（elevenlabs-stream 连续喂送，不使用）
-# context-seconds = 5     # 每个片段前保留的音频上下文（elevenlabs-stream 不使用）
 
 [subtitles]
 # max-cue-seconds = 8.0   # 单条字幕的最长时长（ElevenLabs 后端）
@@ -367,6 +369,9 @@ backend = "codex"         # codex | claude
 # timeout-seconds = 600
 # max-attempts = 3
 # retry-delay-seconds = 1
+
+[agent.stream]            # inherits every agent.draft field; backend changes select its draft model
+# batch-size = 5
 
 [agent.final]             # 交互审校；覆盖 [agent]
 # backend = "…"
@@ -407,16 +412,14 @@ target-language = "zh-CN"
 [agent]
 backend = "codex"
 
-[profiles.stream]
-stream.enabled = true
-transcription.backend = "whisper-server"
-agent.draft.batch-size = 5
-agent.draft.extra-options = ["-c", "service_tier=fast"]
+[profiles.careful]
+agent.draft.effort = "medium"
+
 ```
 
 ```console
-yakiflow run 'https://example.com/live' --profile stream
-yakiflow doctor --profile stream
+yakiflow run input.mp4 --profile careful
+yakiflow doctor --profile careful
 ```
 
 profile 可以使用点号键或嵌套表，并按单项设置合并：只修改
@@ -488,6 +491,8 @@ whisper.cpp 版本支持的模型，然后配置其路径：
 
 ```toml
 [whisper]
+stream-chunk-seconds = 15
+stream-context-seconds = 5
 vad-model = "/absolute/path/to/ggml-silero-v6.2.0.bin"
 ```
 
@@ -549,3 +554,11 @@ yakiflow doctor -c alignment.backend=whisperx
 uv sync --extra dev
 uv run --extra dev pytest
 ```
+
+直播采集使用 `transcription.stream-backend` 和 `agent.stream`（逐项继承
+`agent.draft`）。停止后先提交剩余音频并接收最终结果，再选择直接 review、
+以非 stream 后端重转录完整录音、或退出保留录音和工作目录。无可用结果时禁用
+直接 review。直接 review 保留实时时间戳；交互 review 使用 `agent.final`。
+重转录使用 `transcription.backend`、`agent.draft` 与正常 alignment，资源检查
+通过后清除实时词、翻译和覆盖状态。resume 恢复已选流程或再次询问；无 TTY
+时自动重转录。配置 schema 3 拒绝旧 `[stream]`，不迁移旧工作目录。

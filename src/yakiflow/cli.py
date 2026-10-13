@@ -177,7 +177,7 @@ def _flag_settings(namespace: argparse.Namespace) -> dict[str, Any]:
     get = lambda name: getattr(namespace, name, None)  # noqa: E731
     put(("source_language",), get("source_language"))
     put(("target_language",), get("target_language"))
-    put(("stream", "enabled"), get("stream"))
+    put(("stream",), get("stream"))
     put(("context_files",), get("context_files"))
     put(("output_dir",), get("output_dir"))
     put(("output_mode",), get("output_mode"))
@@ -213,7 +213,7 @@ def _health_check(settings: Settings, input_value: str) -> None:
     story instead of each stage stopping the job on its own missing piece.
     Advisory failures are only warned about and never hold up a run.
     """
-    checks = run_doctor(settings, source_is_url=MediaSource.parse(input_value).is_url)
+    checks = run_doctor(settings.for_stream() if settings.stream else settings, source_is_url=MediaSource.parse(input_value).is_url)
     for check in advisory_failures(checks):
         print(f"yakiflow: warning: {check.name}: {check.detail}", file=sys.stderr)
     failures = fatal_failures(checks)

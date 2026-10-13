@@ -19,7 +19,7 @@ from .models import AgentTraceEvent, Cue, Word, cue_text_weight, word_cue_id
 from .process import CommandRunner
 
 if TYPE_CHECKING:
-    from .elevenlabs import WordBatch
+    from .word_processing import WordBatch
 
 
 ProgressCallback = Callable[[int, int], Awaitable[None]]
@@ -538,7 +538,7 @@ def _word_span(cue: Cue) -> range:
 
 def _junction_suspicious(left: Cue, right: Cue, forced: bool) -> bool:
     """Whether the junction between two draft cues still needs agent repair."""
-    from .elevenlabs import PAUSE_SPLIT_SECONDS
+    from .word_processing import PAUSE_SPLIT_SECONDS
 
     return forced or (
         left.speaker == right.speaker
@@ -1257,7 +1257,7 @@ class TranslationPipeline:
         resumed job dispatches exactly the uncovered runs regardless of how
         the original run had sliced them.
         """
-        from .elevenlabs import split_word_batches
+        from .word_processing import split_word_batches
 
         covered = self._stable_word_coverage()
         runs: list[list[Word]] = []
@@ -1289,7 +1289,7 @@ class TranslationPipeline:
         growing and is held back so every dispatched batch ends on a real
         pause. Returns the newly created tasks; the caller owns awaiting them.
         """
-        from .elevenlabs import dispatchable_word_count
+        from .word_processing import dispatchable_word_count
 
         words = self.db.list_transcript_words()
         usable = words[:dispatchable_word_count(words)]

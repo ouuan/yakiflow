@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from .alignment import AlignmentModelFailureDecision
-from .job import YakiFlowJob
+from .job import StreamExit, YakiFlowJob
 from .media_player import open_media
 from .models import (
     AgentTraceEvent,
@@ -629,6 +629,22 @@ class AlignmentModelFailureDialog(ModalScreen[AlignmentModelFailureDecision]):
         self.dismiss(decision)
 
 
+class StreamCompletionDialog(ModalScreen[str]):
+    def __init__(self, available: bool):
+        super().__init__()
+        self.available = available
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("Capture complete. Choose how to finish the recording.")
+            yield Button("直接进入 review", id="review", disabled=not self.available)
+            yield Button("使用非 stream 重新转录", id="retranscribe", variant="primary")
+            yield Button("退出并保留工作目录", id="exit")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id)
+
+
 class YakiFlowApp(App[None]):
     """Progress, recent subtitles, and post-publication review in one TUI."""
 
@@ -689,6 +705,7 @@ class YakiFlowApp(App[None]):
 
     def on_mount(self) -> None:
         self.job.listener = self._event
+        self.job.stream_completion_listener = self._choose_stream_completion
         self.job.alignment_model_failure_listener = (
             self._choose_alignment_model_failure
         )
@@ -718,6 +735,9 @@ class YakiFlowApp(App[None]):
         self.job.listener = None
         self.job.alignment_model_failure_listener = None
 
+    async def _choose_stream_completion(self, available: bool) -> str:
+        return await self.push_screen_wait(StreamCompletionDialog(available))
+
     async def _choose_alignment_model_failure(
         self, message: str
     ) -> AlignmentModelFailureDecision:
@@ -742,6 +762,8 @@ class YakiFlowApp(App[None]):
             # Leave the progress TUI before handing the terminal to Codex
             # or Claude Code. The CLI performs that hand-off after run()
             # returns, so the two interfaces never compete for the TTY.
+            self.exit()
+        except StreamExit:
             self.exit()
         except asyncio.CancelledError:
             if self.is_running:

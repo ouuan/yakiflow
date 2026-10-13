@@ -338,8 +338,8 @@ class MediaAcquirer:
             chunk_seconds: float = CONTINUOUS_FEED_SECONDS
             context_seconds: float = CONTINUOUS_CONTEXT_SECONDS
         else:
-            chunk_seconds = self.settings.stream.chunk_seconds
-            context_seconds = self.settings.stream.context_seconds
+            chunk_seconds = self.settings.whisper.stream_chunk_seconds
+            context_seconds = self.settings.whisper.stream_context_seconds
         tail_path = self.work_dir / "stream-tail.wav"
         excerpt = self.work_dir / "stream-chunk.wav"
         # A wall-clock deadline, not a poll count: decoding and transcribing a
@@ -464,6 +464,13 @@ class MediaAcquirer:
         media_path = max(sized, key=lambda item: item[1])[0]
         audio_path = self.work_dir / "reference.wav"
         await self.extract_audio(media_path, audio_path)
+        # Feed the final remainder after extraction, including audio received
+        # while the last preview request or downloader shutdown was running.
+        duration = pcm_audio_duration(audio_path) or 0.0
+        if duration > emitted_duration:
+            start = max(0.0, emitted_duration - context_seconds)
+            slice_pcm_wav(audio_path, excerpt, start, duration)
+            await on_chunk(excerpt, start)
         self.db.add_artifact("reference_audio", audio_path)
         self.db.add_artifact("source_media", media_path)
         return MediaArtifact(source, audio_path, media_path, self.settings.download_dir is not None)

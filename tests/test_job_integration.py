@@ -596,7 +596,7 @@ def test_resume_preserves_effective_profile_values_and_option_tokens(
             },
             "final": {"extra_options": ("--search",)},
         },
-        stream={"enabled": True},
+        stream=True,
         commands={"yt_dlp_options": ("--cookies-from-browser", "chrome")},
         work_dir=work_dir,
     )
@@ -605,7 +605,7 @@ def test_resume_preserves_effective_profile_values_and_option_tokens(
 
     resumed = YakiFlowJob.from_workdir(work_dir, backend=PipelineBackend())
 
-    assert resumed.settings.stream.enabled is True
+    assert resumed.settings.stream is True
     assert resumed.settings.agent.draft.batch_size == 5
     assert resumed.settings.agent.draft.extra_options == (
         "-c",
@@ -1226,7 +1226,7 @@ def test_authoritative_transcription_retranslates_provisional_stream_cues(
             memory=tmp_path / "memory.md",
             work_dir=tmp_path / "work",
             output_dir=tmp_path,
-            stream={"enabled": True},
+            stream=True,
         ),
         runner=PipelineRunner(),
         backend=backend,
