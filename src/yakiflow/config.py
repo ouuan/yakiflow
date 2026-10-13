@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field, fields, replace
@@ -102,6 +103,8 @@ class ElevenLabsSettings:
     diarize: bool = True
     num_speakers: int | None = None
     use_speaker_library: bool = True
+    max_minutes: float = 600
+    chunk_overlap_seconds: float = 30
     # Set by ``load_settings`` when the command line won the API-key slot, so
     # key resolution can rank that ahead of the environment variable. Internal:
     # a configuration file cannot set it, but a stored job round-trips it.
@@ -119,6 +122,9 @@ class FunASRSettings:
     api_url: str = "https://dashscope.aliyuncs.com/api/v1"
     realtime_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
     diarize_max_minutes: int = 120
+    diarize_over_limit: str = "disable"
+    max_minutes: float = 720
+    chunk_overlap_seconds: float = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +138,9 @@ class MAISettings:
     model: str = "MAI-Transcribe-2"
     realtime_model: str = "MAI-Transcribe-2-Streaming"
     diarize_max_minutes: int = 15
+    diarize_over_limit: str = "disable"
+    max_minutes: float = 120
+    chunk_overlap_seconds: float = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -659,9 +668,39 @@ def _require_non_negative(value: float, name: str) -> None:
         raise ValueError(f"{name} cannot be negative")
 
 
+def validate_batch_settings(config: Any, provider: str) -> None:
+    """Also used at the request boundary by direct transcriber callers."""
+    for field_name, positive in (
+        ("max_minutes", True),
+        ("chunk_overlap_seconds", False),
+    ):
+        value = getattr(config, field_name)
+        if (
+            type(value) not in (int, float)
+            or (type(value) is float and not math.isfinite(value))
+            or (value <= 0 if positive else value < 0)
+        ):
+            qualifier = "positive" if positive else "non-negative"
+            raise ValueError(
+                f"{provider}.{field_name.replace('_', '-')} must be a finite {qualifier} number"
+            )
+    if hasattr(config, "diarize_max_minutes"):
+        if (
+            type(config.diarize_max_minutes) is not int
+            or config.diarize_max_minutes < 0
+        ):
+            raise ValueError(
+                f"{provider}.diarize-max-minutes must be a non-negative integer"
+            )
+        if config.diarize_over_limit not in ("disable", "split"):
+            raise ValueError(f"{provider}.diarize-over-limit must be disable or split")
+
+
 def validate_run_settings(
     settings: Settings, *, check_credentials: bool = True
 ) -> None:
+    for provider in ("elevenlabs", "fun-asr", "mai"):
+        validate_batch_settings(getattr(settings, provider.replace("-", "_")), provider)
     if not isinstance(settings.stream, bool):
         raise ValueError(
             "stream must be a boolean; the old [stream] table is unsupported"
@@ -712,9 +751,6 @@ def validate_run_settings(
         from .elevenlabs import elevenlabs_api_key
 
         elevenlabs_api_key(settings)
-    threshold = settings.fun_asr.diarize_max_minutes
-    if type(threshold) is not int or threshold < 0:
-        raise ValueError("fun-asr.diarize-max-minutes must be a non-negative integer")
     for name, url, schemes in (
         ("api-url", settings.fun_asr.api_url, {"http", "https"}),
         ("realtime-url", settings.fun_asr.realtime_url, {"ws", "wss"}),
@@ -732,9 +768,6 @@ def validate_run_settings(
         )
     if not settings.fun_asr.realtime_model.startswith("fun-asr-realtime"):
         raise ValueError("fun-asr.realtime-model must select Fun-ASR realtime")
-    threshold = settings.mai.diarize_max_minutes
-    if type(threshold) is not int or threshold < 0:
-        raise ValueError("mai.diarize-max-minutes must be a non-negative integer")
     if settings.mai.endpoint:
         parsed = urlparse(settings.mai.endpoint)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:

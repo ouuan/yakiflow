@@ -92,7 +92,13 @@ def save_raw(work_dir: Path, provider: str, name: str, data: object) -> Path:
 
 
 def effective_diarization(
-    db: JobDatabase, provider: str, audio: Path, minutes: int
+    db: JobDatabase,
+    provider: str,
+    audio: Path,
+    minutes: int,
+    *,
+    over_limit: str = "disable",
+    persist: bool = True,
 ) -> bool:
     saved = db.get_checkpoint("diarization_state")
     if saved is not None:
@@ -100,15 +106,24 @@ def effective_diarization(
             raise ValueError(
                 "stored diarization belongs to a different transcription backend"
             )
+        if minutes == 0:
+            if persist and saved["enabled"]:
+                db.checkpoint("diarization_state", {**saved, "enabled": False})
+            return False
+        if over_limit == "split" and not saved["enabled"] and minutes > 0:
+            raise ValueError(
+                "saved whole-file diarization decision cannot be changed to split; start a new job"
+            )
         return bool(saved["enabled"])
     duration = pcm_audio_duration(audio)
     if duration is None:
         raise ValueError("cannot measure complete recording duration for diarization")
-    enabled = minutes > 0 and duration < minutes * 60
-    db.checkpoint(
-        "diarization_state",
-        {"backend": provider, "enabled": enabled, "duration": duration},
-    )
+    enabled = minutes > 0 and (over_limit == "split" or duration < minutes * 60)
+    if persist:
+        db.checkpoint(
+            "diarization_state",
+            {"backend": provider, "enabled": enabled, "duration": duration},
+        )
     return enabled
 
 

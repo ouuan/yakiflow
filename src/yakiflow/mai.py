@@ -6,12 +6,11 @@ import asyncio
 import json
 import threading
 
-from .cloud import api_key, effective_diarization, http_client, save_raw
-from .media import pcm_audio_duration
-from .models import TranscriptEvent, Word
+from .batch_transcription import BatchResult, BatchTranscriber
+from .cloud import api_key, http_client, save_raw
+from .models import Word
 from .sdk_stream import SDKStreamTranscriber
-from .transcription import Transcriber, normalize_source_language
-from .word_processing import cues_from_words
+from .transcription import normalize_source_language
 
 
 def words_from_result(data, *, diarize):
@@ -54,30 +53,21 @@ def words_from_result(data, *, diarize):
     return words
 
 
-class MAITranscriber(Transcriber):
+class MAITranscriber(BatchTranscriber):
     name = "mai"
+    max_file_bytes = 250_000_000
 
     def __init__(self, settings, work_dir, db, runner=None, *, client_factory=None):
         super().__init__()
         self.settings, self.work_dir, self.db = settings, work_dir, db
         self.client_factory = client_factory or (lambda: http_client("mai"))
 
-    async def transcribe(
-        self, audio, on_event=None, on_progress=None, *, resume_from=()
+    async def transcribe_one(
+        self, audio, *, chunk, cache_dir, namespace, diarize, on_progress
     ):
-        duration = pcm_audio_duration(audio)
-        if duration is None or duration <= 0 or duration >= 7200:
-            raise ValueError(
-                "MAI REST requires a nonempty recording shorter than 2 hours; split manually"
-            )
-        if audio.stat().st_size >= 250_000_000:
-            raise ValueError(
-                "MAI REST requires files smaller than 250 MB; split manually"
-            )
-        diarize = effective_diarization(
-            self.db, self.name, audio, self.settings.mai.diarize_max_minutes
-        )
-        raw = self.work_dir / self.name / "result.json"
+        if audio.stat().st_size >= self.max_file_bytes:
+            raise ValueError("MAI REST requires chunks smaller than 250 MB")
+        raw = cache_dir / self.name / "result.json"
         if raw.exists():
             result = json.loads(raw.read_text())
         else:
@@ -101,7 +91,7 @@ class MAITranscriber(Transcriber):
             language = normalize_source_language(self.settings.source_language)
             if language:
                 definition["locales"] = [language]
-            save_raw(self.work_dir, self.name, "request.json", definition)
+            save_raw(cache_dir, self.name, "request.json", definition)
             client = self.client_factory()
             try:
                 with audio.open("rb") as file:
@@ -120,7 +110,7 @@ class MAITranscriber(Transcriber):
                 if response.status_code >= 400:
                     raise RuntimeError(f"MAI REST HTTP {response.status_code}")
                 result = response.json()
-                save_raw(self.work_dir, self.name, "result.json", result)
+                save_raw(cache_dir, self.name, "result.json", result)
             finally:
                 await asyncio.to_thread(client.close)
         words = words_from_result(result, diarize=diarize)
@@ -128,18 +118,7 @@ class MAITranscriber(Transcriber):
             phrase.get("text", "").strip() for phrase in result.get("phrases", [])
         ):
             raise RuntimeError("MAI response has text but no word timestamps")
-        self.db.replace_transcript_words(words)
-        preview = cues_from_words(
-            words,
-            max_cue_seconds=self.settings.subtitles.max_cue_seconds,
-            max_cue_chars=self.settings.subtitles.max_cue_chars,
-        )
-        if on_event:
-            for cue in preview:
-                await on_event(TranscriptEvent(cue, final=True))
-        if on_progress:
-            await on_progress(1)
-        return preview
+        return BatchResult(words)
 
     async def submit_chunk(self, wav, offset):
         raise RuntimeError("MAI batch cannot capture live audio; use mai-stream")

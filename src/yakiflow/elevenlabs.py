@@ -22,6 +22,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Callable, Sequence
 
+from .batch_transcription import BatchResult, BatchTranscriber
 from .config import Settings
 from .database import JobDatabase
 from .models import Cue, TranscriptEvent, Word, cue_text_weight, preview_cue_id
@@ -49,7 +50,7 @@ _CLOSING_QUOTES = "\"'”’»›』」）)]"
 
 # The documented ceilings are 10 hours of audio in a file of at most 3 GB.
 # Duration is the binding one here: 10 hours of 16 kHz mono PCM is ~1.2 GB.
-MAX_UPLOAD_SECONDS = 36000.0
+MAX_UPLOAD_BYTES = 3_000_000_000
 
 _NO_KEY_ERROR = (
     "no ElevenLabs API key is configured; provide one via "
@@ -340,10 +341,11 @@ def estimate_convert_seconds(duration: float | None, size_bytes: int) -> float:
     )
 
 
-class ElevenLabsTranscriber(Transcriber):
+class ElevenLabsTranscriber(BatchTranscriber):
     """Batch Scribe transcription through the official SDK."""
 
     name = "elevenlabs"
+    max_file_bytes = MAX_UPLOAD_BYTES
     _RETRY_ATTEMPTS = 3
 
     def __init__(
@@ -428,51 +430,31 @@ class ElevenLabsTranscriber(Transcriber):
                 delay *= 2
         raise RuntimeError("unreachable ElevenLabs retry state")
 
-    async def transcribe(
-        self,
-        audio: Path,
-        on_event: EventCallback | None = None,
-        on_progress: ProgressCallback | None = None,
-        *,
-        resume_from: Sequence[Cue] = (),
-    ) -> list[Cue]:
-        # ``resume_from`` is deliberately ignored: the whole-file request is
-        # idempotent, and already-finished agent batches are skipped by their
-        # word_range coverage rather than by a timeline offset.
-        from .media import pcm_audio_duration
+    def legacy_result_exists(self) -> bool:
+        return (self.work_dir / "stt-responses" / "transcribe.json").exists()
 
-        duration = pcm_audio_duration(audio)
-        if duration is not None and duration > MAX_UPLOAD_SECONDS:
-            raise ValueError(
-                f"audio runs {duration / 3600:.2f} h, above the ElevenLabs "
-                f"limit of {MAX_UPLOAD_SECONDS / 3600:.1f} h; split the input "
-                "or use a Whisper backend"
+    async def transcribe_one(
+        self, audio, *, chunk, cache_dir, namespace, diarize, on_progress
+    ):
+        import json
+
+        raw = cache_dir / "stt-responses" / "transcribe.json"
+        if raw.exists():
+            response = json.loads(raw.read_text(encoding="utf-8"))
+        else:
+            estimate = estimate_convert_seconds(
+                chunk.end - chunk.start, audio.stat().st_size
             )
-        estimate = estimate_convert_seconds(duration, audio.stat().st_size)
-        async with ElapsedProgressTicker(estimate, on_progress):
-            response = await self._convert(
-                audio, diarize=self.settings.elevenlabs.diarize
-            )
-        save_raw_response(self.work_dir, "transcribe.json", response)
-        language = normalize_source_language(_get(response, "language_code"))
-        if language:
-            self.db.checkpoint("detected_source_language", language)
-        words = words_from_response(_get(response, "words", []) or [])
-        # Before anything else consumes the stream: cue times are derived from
-        # word times in both the preview and the agent segmentation, so the
-        # repair belongs to the words themselves. The verbatim API answer is
-        # already on disk above, and stays word-for-word what was returned.
-        repair_squeezed_words(words, duration=duration)
-        self.db.replace_transcript_words(words)
-        preview = cues_from_words(
-            words,
-            max_cue_seconds=self.settings.subtitles.max_cue_seconds,
-            max_cue_chars=self.settings.subtitles.max_cue_chars,
+            async with ElapsedProgressTicker(estimate, on_progress):
+                response = await self._convert(audio, diarize=diarize)
+            save_raw_response(cache_dir, "transcribe.json", response)
+        return BatchResult(
+            words_from_response(_get(response, "words", []) or []),
+            normalize_source_language(_get(response, "language_code")),
         )
-        for cue in preview:
-            if on_event:
-                await on_event(TranscriptEvent(cue, final=True))
-        return preview
+
+    def finish_words(self, words, duration):
+        repair_squeezed_words(words, duration=duration)
 
     async def submit_chunk(self, wav: Path, offset: float) -> list[Cue]:
         # Diarization is forced off for chunks: speaker numbering is not

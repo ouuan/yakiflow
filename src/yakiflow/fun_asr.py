@@ -7,12 +7,11 @@ import json
 import time
 import uuid
 
-from .cloud import api_key, effective_diarization, http_client, save_raw
-from .media import pcm_audio_duration
-from .models import TranscriptEvent, Word
+from .batch_transcription import BatchResult, BatchTranscriber
+from .cloud import api_key, http_client, save_raw
+from .models import Word
 from .sdk_stream import SDKStreamTranscriber
-from .transcription import Transcriber, normalize_source_language
-from .word_processing import cues_from_words
+from .transcription import normalize_source_language
 
 
 def words_from_result(data, *, diarize):
@@ -35,8 +34,9 @@ def words_from_result(data, *, diarize):
     return words
 
 
-class FunASRTranscriber(Transcriber):
+class FunASRTranscriber(BatchTranscriber):
     name = "fun-asr"
+    max_file_bytes = 1024**3
 
     def __init__(
         self,
@@ -52,6 +52,7 @@ class FunASRTranscriber(Transcriber):
         self.settings, self.work_dir, self.db = settings, work_dir, db
         self.client_factory = client_factory or (lambda: http_client("fun-asr"))
         self.poll_seconds = poll_seconds
+        self._policy = None
 
     async def _request(self, client, method, url, **kwargs):
         response = await asyncio.to_thread(client.request, method, url, **kwargs)
@@ -67,29 +68,51 @@ class FunASRTranscriber(Transcriber):
             )
         return response
 
-    async def transcribe(
-        self, audio, on_event=None, on_progress=None, *, resume_from=()
-    ):
-        duration = pcm_audio_duration(audio)
-        if duration is None or duration <= 0 or duration > 12 * 3600:
-            raise ValueError(
-                "Fun-ASR requires a nonempty recording no longer than 12 hours; split the input manually"
-            )
-        if audio.stat().st_size > 1024**3:
-            raise ValueError(
-                "Fun-ASR temporary upload limit is 1 GB; split the input manually"
-            )
-        diarize = effective_diarization(
-            self.db, self.name, audio, self.settings.fun_asr.diarize_max_minutes
+    def legacy_task_exists(self):
+        return bool(
+            self.db.get_checkpoint("fun_asr_task")
+            or self.db.get_checkpoint("fun_asr_upload")
         )
-        raw = self.work_dir / self.name / "result.json"
+
+    async def _get_policy(self, client):
+        response = await self._request(
+            client,
+            "GET",
+            self.settings.fun_asr.api_url.rstrip("/") + "/uploads",
+            headers={
+                "Authorization": "Bearer "
+                + api_key(self.settings, self.name, "DASHSCOPE_API_KEY")
+            },
+            params={"action": "getPolicy", "model": self.settings.fun_asr.model},
+        )
+        return response.json()["data"]
+
+    async def prepare_size_limit(self, audio):
+        # An old task is already uploaded; resuming must only poll that task.
+        if self.legacy_result_exists() or self.legacy_task_exists():
+            return self.max_file_bytes
+        client = self.client_factory()
+        try:
+            self._policy = await self._get_policy(client)
+            return min(
+                self.max_file_bytes, int(self._policy["max_file_size_mb"]) * 1024**2
+            )
+        finally:
+            await asyncio.to_thread(client.close)
+
+    async def transcribe_one(
+        self, audio, *, chunk, cache_dir, namespace, diarize, on_progress
+    ):
+        raw = cache_dir / self.name / "result.json"
         if raw.exists():
             result = json.loads(raw.read_text())
         else:
             client = self.client_factory()
             try:
-                result = await self._run_task(client, audio, diarize)
-                save_raw(self.work_dir, self.name, "result.json", result)
+                result = await self._run_task(
+                    client, audio, diarize, namespace=namespace, cache_dir=cache_dir
+                )
+                save_raw(cache_dir, self.name, "result.json", result)
             finally:
                 await asyncio.to_thread(client.close)
         words = words_from_result(result, diarize=diarize)
@@ -97,51 +120,33 @@ class FunASRTranscriber(Transcriber):
             t.get("text", "").strip() for t in result.get("transcripts", [])
         ):
             raise RuntimeError("Fun-ASR response has text but no word timestamps")
-        self.db.replace_transcript_words(words)
-        preview = cues_from_words(
-            words,
-            max_cue_seconds=self.settings.subtitles.max_cue_seconds,
-            max_cue_chars=self.settings.subtitles.max_cue_chars,
-        )
-        if on_event:
-            for cue in preview:
-                await on_event(TranscriptEvent(cue, final=True))
-        if on_progress:
-            await on_progress(1)
-        return preview
+        return BatchResult(words)
 
-    async def _run_task(self, client, audio, diarize):
+    async def _run_task(self, client, audio, diarize, *, namespace, cache_dir):
         base = self.settings.fun_asr.api_url.rstrip("/")
         headers = {
             "Authorization": "Bearer "
             + api_key(self.settings, self.name, "DASHSCOPE_API_KEY")
         }
-        task = self.db.get_checkpoint("fun_asr_task")
+        task = self.db.get_checkpoint(namespace + "_task")
         if task and (
             task["model"] != self.settings.fun_asr.model or task["api_url"] != base
         ):
             raise ValueError("Fun-ASR saved task uses a different model or API URL")
         if not task:
-            upload = self.db.get_checkpoint("fun_asr_upload")
+            upload = self.db.get_checkpoint(namespace + "_upload")
             if (
                 not upload
                 or upload["expires_at"] <= time.time()
                 or upload["model"] != self.settings.fun_asr.model
             ):
-                response = await self._request(
-                    client,
-                    "GET",
-                    base + "/uploads",
-                    headers=headers,
-                    params={
-                        "action": "getPolicy",
-                        "model": self.settings.fun_asr.model,
-                    },
-                )
-                policy = response.json()["data"]
-                if audio.stat().st_size > int(policy["max_file_size_mb"]) * 1024**2:
+                policy = self._policy or await self._get_policy(client)
+                self._policy = None
+                if audio.stat().st_size >= min(
+                    self.max_file_bytes, int(policy["max_file_size_mb"]) * 1024**2
+                ):
                     raise ValueError(
-                        "recording exceeds the Fun-ASR upload policy size limit; split manually"
+                        "chunk exceeds the Fun-ASR upload policy size limit"
                     )
                 key = policy["upload_dir"].rstrip("/") + "/" + uuid.uuid4().hex + ".wav"
                 form = {
@@ -166,8 +171,8 @@ class FunASRTranscriber(Transcriber):
                     "model": self.settings.fun_asr.model,
                     "expires_at": time.time() + 48 * 3600,
                 }
-                self.db.checkpoint("fun_asr_upload", upload)
-                save_raw(self.work_dir, self.name, "upload.json", upload)
+                self.db.checkpoint(namespace + "_upload", upload)
+                save_raw(cache_dir, self.name, "upload.json", upload)
             parameters = {"diarization_enabled": diarize}
             language = normalize_source_language(self.settings.source_language)
             if language:
@@ -188,21 +193,22 @@ class FunASRTranscriber(Transcriber):
                 },
             )
             submitted = response.json()
-            save_raw(self.work_dir, self.name, "submitted.json", submitted)
             if not submitted.get("output", {}).get("task_id"):
+                save_raw(cache_dir, self.name, "submitted.json", submitted)
                 raise RuntimeError("Fun-ASR submission did not return a task ID")
             task = {
                 "id": submitted["output"]["task_id"],
                 "model": self.settings.fun_asr.model,
                 "api_url": base,
             }
-            self.db.checkpoint("fun_asr_task", task)
+            self.db.checkpoint(namespace + "_task", task)
+            save_raw(cache_dir, self.name, "submitted.json", submitted)
         while True:
             response = await self._request(
                 client, "GET", base + "/tasks/" + task["id"], headers=headers
             )
             status = response.json()
-            save_raw(self.work_dir, self.name, "task.json", status)
+            save_raw(cache_dir, self.name, "task.json", status)
             output = status.get("output", {})
             state = output.get("task_status")
             if state == "SUCCEEDED":

@@ -361,6 +361,8 @@ backend = "whisper-cli"   # whisper-cli | whisper-server | elevenlabs | elevenla
 # server-url = "http://127.0.0.1:8080"  # connect instead of launching
 
 [elevenlabs]              # used by elevenlabs and elevenlabs-stream
+max-minutes = 600
+chunk-overlap-seconds = 30
 # api-key-command = "pass show elevenlabs"
 # model = "scribe_v2"
 # realtime-model = "scribe_v2_realtime"
@@ -629,7 +631,10 @@ model = "fun-asr"
 realtime-model = "fun-asr-realtime"
 api-url = "https://dashscope.aliyuncs.com/api/v1"
 realtime-url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+max-minutes = 720
+chunk-overlap-seconds = 30
 diarize-max-minutes = 120
+diarize-over-limit = "disable" # or "split"
 # api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
 ```
 
@@ -642,11 +647,13 @@ Upload metadata, task ID and raw responses are saved in the work directory;
 resume polls the existing task and reuses downloaded results. Expired links or
 failed tasks report an error without silently submitting another paid task.
 Uploads must fit the returned policy and 1 GB temporary-storage limit; models
-support recordings up to 12 hours. Files are never split automatically. Flash
+support requests up to 12 hours. Longer recordings are split automatically. Flash
 models are unsupported. API URLs can use your workspace's regional domain.
 
-Batch diarization is enabled only when the complete recording is **strictly
-shorter** than `diarize-max-minutes`; `0` disables it. The default 120 follows
+With `diarize-over-limit = "disable"` (the default), batch diarization is enabled
+only when the complete recording is **strictly shorter** than
+`diarize-max-minutes`; `0` always disables it. `"split"` keeps diarization enabled
+by splitting each request below that threshold. The default 120 follows
 [the provider's recommendation](https://help.aliyun.com/zh/model-studio/fun-asr-recorded-speech-recognition-http-api).
 The actual decision is persisted for translation, subtitles, review and resume.
 Realtime does not diarize; intermediate sentences are previews, final sentences
@@ -665,7 +672,10 @@ backend = "mai"          # auto stream-backend: mai-stream
 # endpoint = "https://YourResourceName.cognitiveservices.azure.com"
 model = "MAI-Transcribe-2"
 realtime-model = "MAI-Transcribe-2-Streaming"
+max-minutes = 120
+chunk-overlap-seconds = 30
 diarize-max-minutes = 15
+diarize-over-limit = "disable" # or "split"
 # api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
 ```
 
@@ -678,14 +688,66 @@ URL. Realtime uses the region's universal v2 WebSocket endpoint through the
 Doctor checks the dependency and credentials for the selected phase.
 
 [Batch REST](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe)
-requests word timestamps with enhanced mode. Recordings must be shorter than
-2 hours and files smaller than 250 MB; files are not automatically split.
-Diarization is enabled only below `mai.diarize-max-minutes`, a conservative
-preview default of 15 minutes; exactly 15 minutes disables it. `0` always
-disables it; overrides must be nonnegative integers. The complete recording's
+requests word timestamps with enhanced mode. Each request must be shorter than
+2 hours and smaller than 250 MB; longer or larger recordings are split automatically.
+With the default `diarize-over-limit = "disable"`, diarization is enabled only
+when the complete recording is below `mai.diarize-max-minutes`, a conservative
+preview default of 15 minutes; exactly 15 minutes disables it for every chunk.
+`"split"` keeps diarization enabled and limits each chunk to that threshold.
+`0` always disables it; threshold overrides must be nonnegative integers. The complete recording's
 actual decision is saved with the raw request and response and reused on resume.
 Both MAI backends default to no additional alignment. Realtime uses segment
 start/duration timestamps, keeps intermediate results as previews, persists
 final segments, and waits for the last results after closing PCM input.
 Cancellation, NoMatch and service errors are handled through the callback
 thread adapter. MAI realtime does not enable diarization.
+
+### Batch duration limits and recovery
+
+`elevenlabs`, `fun-asr` and `mai` share automatic file splitting. Configure
+`max-minutes` and `chunk-overlap-seconds` in the backend's TOML table or with
+`-c`, for example `-c mai.diarize-over-limit=split -c mai.max-minutes=60`.
+`max-minutes` accepts finite positive numbers; overlap accepts finite nonnegative
+numbers. Defaults follow the single-request duration ceilings documented by
+[ElevenLabs](https://elevenlabs.io/docs/overview/capabilities/speech-to-text),
+[Fun-ASR](https://help.aliyun.com/zh/model-studio/asr-model) and
+[MAI](https://learn.microsoft.com/en-us/rest/api/speechtotext/transcriptions/transcribe?view=rest-speechtotext-2025-10-15):
+
+| Backend | `max-minutes` | `chunk-overlap-seconds` |
+| --- | ---: | ---: |
+| `elevenlabs` | 600 | 30 |
+| `fun-asr` | 720 | 30 |
+| `mai` | 120 | 30 |
+
+Reaching a duration ceiling triggers splitting. A single plan uses the smallest
+of the configured duration, the provider's PCM file size budget, and the
+positive diarization threshold when `diarize-over-limit = "split"` applies.
+Each chunk, including overlap, stays strictly below the limit with a PCM frame
+of margin at an exact boundary. Fun-ASR obtains the upload policy before the
+first plan and also observes the 1 GB temporary upload cap; MAI checks 250 MB
+per chunk. Overlap must be smaller than the usable chunk length, otherwise the
+job fails before uploading. There is no separate diarization overlap setting.
+With `"disable"`, the complete recording determines diarization for every chunk;
+short chunks never re-enable it. `diarize-max-minutes = 0` always turns it off.
+
+Requests run sequentially. The work directory retains the complete plan, raw
+responses and normalized words per chunk. Resume reuses fixed boundaries,
+skips completed chunks, and polls Fun-ASR tasks already submitted for that
+chunk. Changes to request settings or input audio are rejected to prevent
+mixing results; restore the original settings or start a new job. Existing
+whole-file result caches and Fun-ASR task checkpoints remain usable for whole-file
+plans. An existing whole-file result/task cannot be reused for a split plan.
+
+Merging restores original timestamps and matches overlap words using normalized
+text and nearby times, ignoring punctuation differences. Speaker IDs carry
+across chunks only with at least two consistent, uniquely corresponding word
+matches; insufficient evidence, ties or conflicting labels produce a new ID.
+With zero overlap, no speaker continuity is inferred. Matching cannot guarantee
+speaker identity across silence, transcription differences or ambiguous
+simultaneous speech. Matched duplicates appear once; other words belong to the
+side of the overlap midpoint containing their center, keeping full word times
+and simultaneous speech from different speakers. ElevenLabs timing repair runs
+after merging. Translation starts from the complete merged transcript.
+
+These file limits do not change realtime session recovery. Batch retranscription
+after a live capture uses the same backend configuration and chunking rules.

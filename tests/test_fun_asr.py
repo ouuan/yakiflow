@@ -202,7 +202,7 @@ def test_diarization_boundary_persists(
     db = JobDatabase(tmp_path / "db")
     assert effective_diarization(db, "fun-asr", Path("audio"), minutes) is enabled
     assert (
-        effective_diarization(db, "fun-asr", Path("audio"), 0 if enabled else 999)
+        effective_diarization(db, "fun-asr", Path("audio"), minutes if enabled else 999)
         is enabled
     )
     assert db.get_checkpoint("diarization_state")["duration"] == duration

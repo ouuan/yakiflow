@@ -337,6 +337,8 @@ backend = "whisper-cli"   # whisper-cli | whisper-server | elevenlabs | elevenla
 # server-url = "http://127.0.0.1:8080"  # 连接已运行实例而不本地启动
 
 [elevenlabs]              # elevenlabs 与 elevenlabs-stream 共用
+max-minutes = 600
+chunk-overlap-seconds = 30
 # api-key-command = "pass show elevenlabs"
 # model = "scribe_v2"
 # realtime-model = "scribe_v2_realtime"
@@ -579,7 +581,10 @@ model = "fun-asr"
 realtime-model = "fun-asr-realtime"
 api-url = "https://dashscope.aliyuncs.com/api/v1"
 realtime-url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+max-minutes = 720
+chunk-overlap-seconds = 30
 diarize-max-minutes = 120
+diarize-over-limit = "disable" # or "split"
 # api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
 ```
 
@@ -587,10 +592,12 @@ diarize-max-minutes = 120
 `yakiflow secret set fun-asr`（需 `[keyring]`）。非实时通过 HTTP 上传到百炼
 临时 OSS，再提交、轮询并下载；持久化上传信息、任务 ID 和原始结果，恢复时
 继续已有任务。链接过期及任务/子任务失败会明确报错，不自动重复提交付费任务。
-上传受 1 GB 临时存储限制及上传 policy 限制，模型最长 12 小时，不自动拆分；
+上传受 1 GB 临时存储限制及上传 policy 限制，单次请求最长 12 小时，长录音自动拆分；
 Flash 不支持。API 地址可配置业务空间域名。
 
-完整录音严格短于 `diarize-max-minutes` 才开启说话人分离；`0` 关闭，默认 120
+默认 `diarize-over-limit = "disable"` 时，完整录音严格短于
+`diarize-max-minutes` 才开启说话人分离；`"split"` 则保持开启并按此阈值分块。
+`0` 始终关闭，默认 120
 来自[官方两小时建议](https://help.aliyun.com/zh/model-studio/fun-asr-recorded-speech-recognition-http-api)。
 实际状态持久化，字幕、翻译、review 和 resume 一致。实时不支持说话人分离，
 使用官方 DashScope SDK（WebSocket），临时句仅预览，最终句持久化；停止等待
@@ -607,7 +614,10 @@ backend = "mai"          # auto stream-backend: mai-stream
 # endpoint = "https://YourResourceName.cognitiveservices.azure.com"
 model = "MAI-Transcribe-2"
 realtime-model = "MAI-Transcribe-2-Streaming"
+max-minutes = 120
+chunk-overlap-seconds = 30
 diarize-max-minutes = 15
+diarize-over-limit = "disable" # or "split"
 # api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
 ```
 
@@ -619,10 +629,52 @@ diarize-max-minutes = 15
 处理。doctor 按当前阶段检查依赖及凭据。
 
 [非实时 REST](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe)
-使用 multipart 和 enhanced mode，请求逐词时间戳。录音必须短于 2 小时、文件
-小于 250 MB，不自动拆分。完整录音严格短于 `diarize-max-minutes` 才开启
-说话人分离，默认 15 是预览版的保守值；达到 15 分钟即关闭，`0` 始终关闭。
+使用 multipart 和 enhanced mode，请求逐词时间戳。每块必须短于 2 小时、文件
+小于 250 MB，长录音及大文件自动拆分。默认 `diarize-over-limit = "disable"` 时，
+完整录音严格短于 `diarize-max-minutes` 才开启说话人分离，默认 15 是预览版的
+保守值；达到 15 分钟即对所有块关闭。`"split"` 保持开启并按此阈值分块；
+`0` 始终关闭。
 覆盖值必须为非负整数。实际启用状态、原始请求和响应持久化，resume 复用。
 默认不额外 alignment。实时按片段起止时间处理，临时结果仅预览，最终结果
 持久化；关闭 PCM 输入后等待最后结果，线程回调安全进入 asyncio，处理
 取消、NoMatch 和服务错误；实时不开启说话人分离。
+
+### 批量时长限制与恢复
+
+`elevenlabs`、`fun-asr` 和 `mai` 共用自动分块逻辑。在对应 backend 的 TOML 表内
+设置 `max-minutes` 和 `chunk-overlap-seconds`，或通过 `-c` 覆盖，例如
+`-c mai.diarize-over-limit=split -c mai.max-minutes=60`。`max-minutes` 接受有限
+正数，overlap 接受有限非负数。默认单请求时长沿用
+[ElevenLabs](https://elevenlabs.io/docs/overview/capabilities/speech-to-text)、
+[Fun-ASR](https://help.aliyun.com/zh/model-studio/asr-model) 和
+[MAI](https://learn.microsoft.com/en-us/rest/api/speechtotext/transcriptions/transcribe?view=rest-speechtotext-2025-10-15)
+的限制：
+
+| Backend | `max-minutes` | `chunk-overlap-seconds` |
+| --- | ---: | ---: |
+| `elevenlabs` | 600 | 30 |
+| `fun-asr` | 720 | 30 |
+| `mai` | 120 | 30 |
+
+达到时长上限即自动拆分。只计算一次计划，单块长度取配置时长、provider 文件大小
+对应的 PCM 时长，以及选择 `diarize-over-limit = "split"` 时生效的正数 diarization
+阈值中的最小值。每块包含 overlap 后仍严格低于限制，恰好达到边界时按 PCM 帧
+留出最小余量。Fun-ASR 在首次规划前获取上传 policy，同时遵守 1 GB 临时上传
+限制；MAI 按单块检查 250 MB。overlap 必须小于实际可用块长度，否则上传前报错。
+不提供独立的 diarization overlap 设置。`"disable"` 始终按完整录音判断，短块
+不会重新开启 diarization；`diarize-max-minutes = 0` 始终关闭。
+
+块请求顺序执行。工作目录保存完整计划、逐块原始响应和标准化词；resume 固定原有
+边界，跳过已完成块，并继续轮询该块已经提交的 Fun-ASR 任务。修改请求相关配置
+或输入音频会明确报错，避免混用结果；请恢复原配置或创建新任务。旧整段结果缓存
+和 Fun-ASR 任务 checkpoint 可继续用于整段计划，不能复用于新的分块计划。
+
+合并时恢复原始时间轴，使用归一化文本和邻近时间匹配重叠词，忽略标点差异。
+至少两个一致且对应唯一的匹配词才会复用跨块 speaker 编号；证据不足、平票或
+冲突会分配新编号。overlap 为 0 时不推断 speaker 连续性。静音、转录差异和
+多人同时发言造成的歧义可能使同一个说话人在不同块获得不同编号，无法保证身份
+始终一致。匹配的重复词只保留一次；其他词根据词中心位于重叠区中点的哪一侧
+确定归属，保留完整词时间和不同说话人的同时发言。ElevenLabs 词时长修复在合并
+后执行；完整合并后才进入现有翻译流程。
+
+实时会话仍沿用原有恢复逻辑；直播结束后的批量重转录使用这些配置和分块规则。

@@ -3,7 +3,6 @@ import json
 import sys
 import threading
 from datetime import timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -57,11 +56,10 @@ RESULT = {
 def test_rest_word_timestamps_and_diarization_boundary(
     tmp_path, monkeypatch, duration, threshold, enabled
 ):
-    from yakiflow import cloud, mai
+    from yakiflow import cloud
 
     monkeypatch.setenv("SPEECH_KEY", "test")
     monkeypatch.setattr(cloud, "pcm_audio_duration", lambda _: duration)
-    monkeypatch.setattr(mai, "pcm_audio_duration", lambda _: duration)
     db = JobDatabase(tmp_path / "db")
     configured = make_settings(
         source_language="en",
@@ -95,33 +93,24 @@ def test_rest_word_timestamps_and_diarization_boundary(
     db.close()
 
 
-@pytest.mark.parametrize("duration", [7200, 7201, 0])
-def test_rest_duration_limit_prevents_request(tmp_path, monkeypatch, duration):
-    monkeypatch.setattr("yakiflow.mai.pcm_audio_duration", lambda _: duration)
+def test_rest_empty_audio_prevents_request(tmp_path):
     db = JobDatabase(tmp_path / "db")
     transcriber = MAITranscriber(
-        settings(),
-        tmp_path,
-        db,
-        client_factory=lambda: pytest.fail("must validate before HTTP"),
+        settings(), tmp_path, db, client_factory=lambda: pytest.fail("must validate before HTTP")
     )
-    with pytest.raises(ValueError, match="shorter than 2 hours"):
-        asyncio.run(transcriber.transcribe(wav(tmp_path / "audio.wav")))
+    with pytest.raises(ValueError, match="nonempty PCM"):
+        asyncio.run(transcriber.transcribe(wav(tmp_path / "audio.wav", 0)))
     db.close()
 
 
-def test_rest_file_size_limit_and_service_error(tmp_path, monkeypatch):
+def test_rest_service_error(tmp_path, monkeypatch):
     monkeypatch.setenv("SPEECH_KEY", "test")
     db = JobDatabase(tmp_path / "db")
     transcriber = MAITranscriber(
         settings(), tmp_path, db, client_factory=lambda: Client([Response(status=503)])
     )
-    audio = wav(tmp_path / "audio.wav")
     with pytest.raises(RuntimeError, match="HTTP 503"):
-        asyncio.run(transcriber.transcribe(audio))
-    monkeypatch.setattr(Path, "stat", lambda _: SimpleNamespace(st_size=250 * 1024**2))
-    with pytest.raises(ValueError, match="250 MB"):
-        asyncio.run(transcriber.transcribe(audio))
+        asyncio.run(transcriber.transcribe(wav(tmp_path / "audio.wav")))
     db.close()
 
 

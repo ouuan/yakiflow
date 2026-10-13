@@ -643,26 +643,21 @@ def test_rate_limits_are_retried_with_backoff(
     db.close()
 
 
-def test_overlong_audio_is_rejected_before_upload(tmp_path: Path) -> None:
+def test_overlong_audio_splits_before_upload(tmp_path: Path) -> None:
     audio = tmp_path / "reference.wav"
-    _write_wav(audio, seconds=1.0)
-    # Rewrite the header to claim an absurd duration without paying for it.
-    import wave
-
-    with wave.open(str(audio), "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(1)
-        writer.writeframes(b"\x00\x00" * 40000)
-    client = FakeClient([])
+    _write_wav(audio, 2)
+    client = FakeClient([FakeConvertResponse([]), FakeConvertResponse([])])
     db = JobDatabase(tmp_path / "job.sqlite3")
     transcriber = ElevenLabsTranscriber(
-        _settings(), tmp_path, db, client_factory=lambda: client
+        _settings(elevenlabs={"max-minutes": 2 / 60, "chunk-overlap-seconds": 0}),
+        tmp_path,
+        db,
+        client_factory=lambda: client,
     )
-
-    with pytest.raises(ValueError, match="limit"):
-        asyncio.run(transcriber.transcribe(audio))
-    assert client.speech_to_text.calls == []
+    asyncio.run(transcriber.transcribe(audio))
+    assert len(client.speech_to_text.calls) == 2
+    plan = db.get_checkpoint("batch_plan_elevenlabs")
+    assert plan["chunks"][0]["end_frame"] == 2 * 16000 - 1
     db.close()
 
 
