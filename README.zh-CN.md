@@ -2,13 +2,11 @@
 
 简体中文 | [English](README.md)
 
-YakiFlow 可以把本地视频、音频、网页视频或直播流转换成 ASS 字幕。它使用
-`whisper.cpp` 或 ElevenLabs Scribe API 转录，通过 Codex 或 Claude Code 翻译，
-并在保存前让你与交互式 Agent 一起审校结果。使用支持说话人识别的后端时，每条
-字幕都带有说话人标签，两人同时说话会成为两条时间上重叠的字幕。
+YakiFlow 为本地视频、音频、网页视频和直播生成 ASS 字幕，支持原文、译文和
+双语输出。你可以使用本地或云端转录，通过 Codex 或 Claude Code 翻译，并在
+保存前与 Agent 一起审校。支持说话人识别的后端还能标注说话人并保留同时发言。
 
-任务支持断点续跑：如果运行中断，YakiFlow 会保留已经完成的工作，并打印继续
-任务所需的命令。
+任务中断后可以续跑，无需从头开始。
 
 ## 快速开始
 
@@ -24,7 +22,7 @@ YakiFlow 可以把本地视频、音频、网页视频或直播流转换成 ASS 
   `whisper-cli`。
 
 处理 URL 时还要安装 `yt-dlp`。`tmux` 和 `mpv` 是可选工具，分别用于分屏审校和
-视频预览。ElevenLabs 后端不需要任何本地转录工具，参见
+视频预览。云端转录后端不需要 whisper.cpp 或本地模型，参见
 [转录后端](#转录后端)。
 
 ### 2. 安装 YakiFlow
@@ -70,12 +68,11 @@ yakiflow doctor -c agent.backend=codex
 
 使用 Claude Code 时把 `codex` 换成 `claude`。请修复所有与当前输入有关的
 `FAIL`；`yt-dlp` 只影响 URL，whisper.cpp 相关检查只影响 Whisper 后端。
-ElevenLabs 后端不需要 `models fetch`。标为 `WARN` 的是任何任务都不依赖的
-可选项，例如用于预览字幕的 `tmux`。
+云端转录后端不需要 `models fetch`。`WARN` 表示缺少可选工具，例如用于分屏
+审校的 `tmux`。
 
-`yakiflow run` 和 `yakiflow resume` 启动时会重跑这些检查，只要有一项失败就
-拒绝开始，因此环境不满足时会立刻报错，而不是跑到一半才失败。加上
-`--skip-health-check` 可以跳过检查直接开始。
+`run` 和 `resume` 启动时也会检查环境。确认检查不适用时，可以加上
+`--skip-health-check` 跳过。
 
 ### 5. 生成字幕
 
@@ -105,12 +102,12 @@ YakiFlow 会显示转录和翻译进度。在交互式终端中，随后会打�
 | --- | --- |
 | `-s`、`--source-language` | 源语言代码，或 `auto` |
 | `-t`、`--target-language` | 目标语言或区域设置 |
-| `--transcription-backend` | 四种转录后端之一 |
+| `--transcription-backend` | 选择下表中的转录后端 |
 | `--stream` / `--no-stream` | 把 URL 作为直播流处理 |
 | `--output-dir` | 最终字幕文件的目录 |
 | `--output-mode` | `source`、`translated`、`bilingual` 或 `all` |
-| `--context-file` | 把参考文件复制进工作目录；可重复 |
-| `--work-dir` | 把可续跑的任务状态放到指定目录 |
+| `--context-file` | 为审校提供参考文件；可重复 |
+| `--work-dir` | 指定任务工作目录，供中断后续跑 |
 | `--keep-workdir` | 成功后保留中间文件 |
 | `--skip-health-check` | `run`、`resume` 启动时跳过环境检查 |
 | `--config-file` | 使用指定的项目配置文件 |
@@ -131,71 +128,125 @@ yakiflow run video.mp4 \
 
 ## 转录后端
 
-用 `transcription.backend`（或 `--transcription-backend`）选择：
+用 `--transcription-backend` 或配置中的 `transcription.backend` 选择：
 
-| 后端 | 说明 | 需要 |
+| 后端 | 适用场景 | 需要 |
 | --- | --- | --- |
-| `whisper-cli` | 本地 whisper.cpp 批量转录（默认） | `whisper-cli` 和模型文件 |
-| `whisper-server` | whisper.cpp 服务器——本地启动，或通过 `whisper.server-url` 连接已运行的实例 | `whisper-server`，或可访问的服务器 |
-| `elevenlabs` | ElevenLabs Scribe 批量 API，支持说话人识别 | `yakiflow[elevenlabs]` 和 API key |
-| `elevenlabs-stream` | ElevenLabs Scribe 实时 WebSocket API | `yakiflow[elevenlabs]` 和 API key |
-| `fun-asr` | Fun-ASR asynchronous file HTTP API | `yakiflow[fun-asr]`, API key |
-| `fun-asr-stream` | DashScope Recognition realtime SDK (WebSocket) | `yakiflow[fun-asr]`, API key |
-| `mai` | MAI-Transcribe REST multipart API | `yakiflow[mai]`, Speech key and region/endpoint |
-| `mai-stream` | MAI-Transcribe Streaming Speech SDK | `yakiflow[mai]`, Speech key and region |
+| `whisper-cli` | 本地文件转录（默认） | `whisper-cli` 和模型文件 |
+| `whisper-server` | 本地转录与直播预览 | `whisper-server` 和模型，或可访问的服务器 |
+| `elevenlabs` | ElevenLabs Scribe 文件转录，支持说话人识别 | `.[elevenlabs]` 和 API key |
+| `elevenlabs-stream` | ElevenLabs 实时转录 | `.[elevenlabs]` 和 API key |
+| `fun-asr` | 阿里云 Fun-ASR 文件转录，支持说话人识别 | `.[fun-asr]` 和 API key |
+| `fun-asr-stream` | 阿里云实时转录 | `.[fun-asr]` 和 API key |
+| `mai` | Azure MAI 文件转录，支持说话人识别 | `.[mai]`、Speech key 和 region 或 endpoint |
+| `mai-stream` | Azure MAI 实时转录 | `.[mai]`、Speech key 和 region |
 
-普通任务使用 `transcription.backend`，直播采集使用 `transcription.stream-backend`。
-处理直播时，
-`whisper-server` 和 `elevenlabs-stream` 的实时预览最快；`whisper-cli` 也可用，
-但每个片段都要重新加载模型，预览会明显落后于直播。
+直播默认使用所选服务的实时后端；Whisper 默认使用 `whisper-server`。需要单独
+选择时设置 `transcription.stream-backend`。云端实时后端不支持说话人识别。
 
-`elevenlabs` 后端支持说话人识别（`elevenlabs.diarize`，默认开启）：每条字幕的
-说话人标签写入 ASS 的 `Name` 字段，同时说话会成为时间上重叠的字幕。有人被打断
-时，他的字幕会继续显示在插话的字幕下面，而不是就此中断。实时 API 不支持说话人
-识别。使用 ElevenLabs 后端时，字幕的分行断句和翻译由 draft Agent
-根据词级转录一并完成。
+### Whisper
 
-连接已运行的 whisper-server 而不是本地启动：
+默认使用 `whisper-cli`，先运行 `yakiflow models fetch` 下载模型。
+要连接已运行的 whisper-server：
 
 ```toml
-stream = false           # --stream / --no-stream
-
 [transcription]
-# stream-backend = "whisper-server"  # auto: Whisper → whisper-server; ElevenLabs → elevenlabs-stream
 backend = "whisper-server"
 
 [whisper]
-stream-chunk-seconds = 15
-stream-context-seconds = 5
 server-url = "http://127.0.0.1:8080"
 ```
 
-### ElevenLabs API key
+### ElevenLabs
 
-key 按以下顺序查找：
+安装依赖、设置 key，再运行任务（以下示例沿用快速开始中的语言和 Agent 配置）：
 
-1. 命令行 `-c` 传入的 `elevenlabs.api-key*` 设置；
-2. 环境变量 `ELEVENLABS_API_KEY`；
-3. 配置文件中的 `elevenlabs.api-key*` 设置；
-4. 操作系统钥匙串（需要 `yakiflow[keyring]`）。
+```console
+python -m pip install -e '.[elevenlabs]'
+export ELEVENLABS_API_KEY='你的 API key'
+yakiflow run video.mp4 --transcription-backend elevenlabs
+```
 
-在配置文件（或 `-c`）中，三种写法只能选一种：
+文件转录默认识别说话人。可用 `-c elevenlabs.diarize=false` 关闭，或用
+`-c elevenlabs.num-speakers=3` 提供说话人数提示。
+
+### Fun-ASR
+
+```console
+python -m pip install -e '.[fun-asr]'
+export DASHSCOPE_API_KEY='你的 API key'
+yakiflow run video.mp4 --transcription-backend fun-asr
+```
+
+默认使用 `fun-asr` 和 `fun-asr-realtime` 模型，不支持 Flash 模型。业务空间
+需要其他服务地址时，设置 `fun-asr.api-url` 和 `fun-asr.realtime-url`。
+长录音的说话人识别设置见下文。
+
+### MAI
+
+```console
+python -m pip install -e '.[mai]'
+export SPEECH_KEY='你的 Speech key'
+export SPEECH_REGION='你的资源区域'
+yakiflow run video.mp4 --transcription-backend mai
+```
+
+区域也可通过 `mai.region` 配置。文件转录还可以用 `mai.endpoint` 指定资源
+地址或完整转录 URL；实时转录必须提供区域。
+
+### 管理 API key
+
+三个云端服务都支持环境变量、配置文件和操作系统钥匙串。key 的优先级为：
+命令行 `-c`、环境变量、配置文件、钥匙串。环境变量名称见上面的示例。
+
+在配置文件中，以下三种写法只能选一种；使用其他服务时把表名改为 `fun-asr`
+或 `mai`：
 
 ```toml
 [elevenlabs]
-api-key = "sk-…"                  # 直接写 key
-# api-key-file = "~/.secrets/elevenlabs"   # 从文件读取 key
-# api-key-command = "pass show elevenlabs" # 运行命令，stdout 是 key
+api-key = "sk-…"
+# api-key-file = "~/.secrets/elevenlabs"
+# api-key-command = "pass show elevenlabs"
 ```
 
-把 key 存进操作系统钥匙串而不写任何文件：
+也可以安装 `.[keyring]`，用以下命令保存或删除 key；服务名同样可替换：
 
 ```console
 yakiflow secret set elevenlabs
 yakiflow secret unset elevenlabs
 ```
 
-`yakiflow doctor` 会报告 key 的来源，但不会打印 key 本身。
+`yakiflow doctor` 会显示 key 的来源，但不会打印 key 本身。
+
+### 长录音与说话人识别
+
+云端文件转录会自动拆分长录音，无需手动裁剪。可在对应服务的配置表中调整
+`max-minutes` 和 `chunk-overlap-seconds`：
+
+| 配置表 | 默认单次转录时长上限（分钟） | 默认重叠时长（秒） |
+| --- | ---: | ---: |
+| `[elevenlabs]` | 600 | 30 |
+| `[fun-asr]` | 720 | 30 |
+| `[mai]` | 120 | 30 |
+
+文件大小限制也可能使录音提前拆分。`max-minutes` 必须大于 0，重叠时长必须
+非负且小于实际可用片段长度。
+
+Fun-ASR 默认只对不足 120 分钟的完整录音启用说话人识别，MAI 则为不足
+15 分钟；达到阈值后默认关闭。要在长录音中保留说话人识别，设置
+`diarize-over-limit = "split"`，例如：
+
+```toml
+[mai]
+diarize-over-limit = "split"
+diarize-max-minutes = 15
+```
+
+`diarize-max-minutes` 接受非负整数分钟；设为 `0` 始终关闭说话人识别。
+拆分后的录音中，同一个说话人可能获得不同编号，审校时请留意。
+
+中断后用 `yakiflow resume` 复用已完成的转录。若提示输入或转录配置不兼容，
+请恢复原配置或新建任务。
 
 ## 常见任务
 
@@ -233,11 +284,12 @@ yakiflow run 'https://example.com/live' \
   --output-dir ./subtitles
 ```
 
-采集结束后，可选择复用实时结果进入 review、重新转录完整录像，或退出并保留工作
-目录。在 TUI 中按 `s` 停止采集并把已收到的内容收尾；非 TUI 运行按一次 Ctrl-C。
+采集结束后，可选择使用实时结果进入审校、重新转录完整录像，或退出并保留工作
+目录。没有可用的实时结果时，要先重新转录才能审校；非交互式运行会自动重新转录。
+在 TUI 中按 `s` 停止采集并把已收到的内容收尾；非 TUI 运行按一次 Ctrl-C。
 直播进行中可以按 `o`，在媒体播放器中打开目前已录到的部分并挂上当前的实时字幕。
 
-播放器只会加载一次字幕文件。要让 mpv 自动跟进实时字幕的更新，把本仓库的
+要让 mpv 自动跟进实时字幕的更新，把本仓库的
 `contrib/mpv/sub-autoreload.lua` 复制到 mpv 的脚本目录（通常是
 `~/.config/mpv/scripts/`），或在 `review.video-open-command` 中加上
 `--script=/path/to/contrib/mpv/sub-autoreload.lua`。设置该选项会完全替换默认
@@ -310,102 +362,38 @@ yakiflow resume /path/to/workdir
 在 Linux 上，用户配置文件是 `~/.config/yakiflow/config.toml`（或
 `$XDG_CONFIG_HOME/yakiflow/config.toml`）。相对路径相对于启动任务的目录解析。
 
-设置按 TOML 表分组。包含最常用键的完整示例：
+日常配置只需写出要修改的设置。例如，让草稿翻译更仔细，并在审校时自动打开视频：
 
 ```toml
-# 顶层设置
 source-language = "auto"
 target-language = "zh-CN"
-output-mode = "bilingual"        # source | translated | bilingual | all
+output-mode = "bilingual"
 output-dir = "./subtitles"
-# download-dir = "./downloads"   # 保留从 URL 下载的媒体
-# memory = "./memory.md"         # 持久的术语/风格记忆文件
-# context-files = ["notes.txt"]  # 交互审校的只读参考文件
-# work-dir = "./work"            # 可续跑任务状态的位置
-# keep-workdir = false
+# memory = "./memory.md"  # 在这些任务之间共享术语与风格偏好
 
-[transcription]
-# stream-backend = "whisper-server"  # auto: Whisper → whisper-server; ElevenLabs → elevenlabs-stream
-backend = "whisper-cli"   # whisper-cli | whisper-server | elevenlabs | elevenlabs-stream
+[agent]
+backend = "codex"        # 或 claude
 
-[whisper]                 # whisper-cli 与 whisper-server 共用
-# model = "/path/to/ggml-large-v3-turbo-q5_0.bin"
-# vad-model = "/path/to/ggml-silero-v6.2.0.bin"
-# vad = true              # 设为 false 可忽略已配置的 VAD 模型
-# cli = "whisper-cli"     # 可执行文件名或路径
-# server = "whisper-server"
-# server-url = "http://127.0.0.1:8080"  # 连接已运行实例而不本地启动
-
-[elevenlabs]              # elevenlabs 与 elevenlabs-stream 共用
-max-minutes = 600
-chunk-overlap-seconds = 30
-# api-key-command = "pass show elevenlabs"
-# model = "scribe_v2"
-# realtime-model = "scribe_v2_realtime"
-# diarize = true          # 说话人识别（仅批量 API）
-# num-speakers = 3        # 可选的说话人数提示
-# use-speaker-library = true  # 与工作区的说话人库比对，识别已知说话人
-
-[alignment]
-# backend = "vad"         # vad | whisperx | none
-# device = "auto"         # auto | cpu | cuda（WhisperX）
-# model = "custom/model"  # 覆盖 WhisperX 对齐模型
-
-
-[subtitles]
-# max-cue-seconds = 8.0   # 单条字幕的最长时长（ElevenLabs 后端）
-# max-cue-chars = 84      # 单条字幕单语言的最长字符数（CJK 按 2 个计）
-
-[agent]                   # 两个翻译阶段共享
-backend = "codex"         # codex | claude
-# model = "…"             # 很少需要
-# effort = "…"            # minimal | low | medium | high | xhigh
-# extra-options = ["…"]   # 传给 Agent CLI 的额外 argv 参数
-
-[agent.draft]             # 批量草稿翻译；覆盖 [agent]
-# backend = "…"
-# model = "…"             # 默认：codex → gpt-5.6-terra，claude → sonnet
-# effort = "low"
-# extra-options = ["…"]
-# workers = 4             # 并行草稿请求数
-# batch-size = 20         # 每次请求的字幕条数（Whisper 后端）
-# preceding-context = 10  # 作为上下文的前文字幕条数
-# following-context = 5   # 作为上下文的后文字幕条数
-# word-batch-size = 400   # 每次请求的词数（ElevenLabs 后端）
-# word-following-context = 40
-# timeout-seconds = 600
-# max-attempts = 3
-# retry-delay-seconds = 1
-
-[agent.stream]            # inherits every agent.draft field; backend changes select its draft model
-# batch-size = 5
-
-[agent.final]             # 交互审校；覆盖 [agent]
-# backend = "…"
-# model = "…"             # 默认：codex → gpt-5.6-sol，claude → opus
-# effort = "high"
-# extra-options = ["…"]
+[agent.draft]
+effort = "medium"
 
 [review]
-# display-mode = "split"  # split | open | both
-# open-command = "code --reuse-window {workdir} {subtitle} {memory}"
-# auto-open-video = false
-# video-open-command = "vlc --sub-file={subtitle} {file}"
-
-[commands]
-# ffmpeg = "ffmpeg"
-# ffprobe = "ffprobe"
-# yt-dlp = "yt-dlp"
-# yt-dlp-options = ["--cookies-from-browser", "chrome"]
+auto-open-video = true
 ```
 
-Codex 的默认模型是草稿翻译 `gpt-5.6-terra`、审校 `gpt-5.6-sol`；Claude 的默认
-是 `sonnet` 和 `opus`。如果这些名称对你的账户不可用，请自行覆盖。
-`[agent.draft]` 和 `[agent.final]` 中的设置优先于共享的 `[agent]` 值，因此两个
-阶段可以使用不同的后端。
+`[agent]` 设置同时用于翻译和审校。可在 `[agent.draft]`、`[agent.final]` 中
+分别设置 `backend`、`model` 和 `effort`；直播翻译使用 `[agent.stream]`，未设置的
+选项沿用 `[agent.draft]`。账户无法使用默认模型时，通过这些设置指定可用模型。
 
-`extra-options` 和 `yt-dlp-options` 必须是只含字符串的 TOML 数组。YakiFlow 把
-每个字符串直接作为一个 argv 参数传递；带值的选项要写成两个数组元素。
+额外命令行参数写成字符串数组，选项与其值分别占一个元素：
+
+```toml
+[commands]
+yt-dlp-options = ["--cookies-from-browser", "chrome"]
+```
+
+Agent 的额外参数同样可通过 `agent.extra-options` 或各阶段的 `extra-options`
+设置。完整命令行帮助见 `yakiflow run --help`。
 
 ### 配置 profile
 
@@ -429,13 +417,9 @@ yakiflow run input.mp4 --profile careful
 yakiflow doctor --profile careful
 ```
 
-profile 可以使用点号键或嵌套表，并按单项设置合并：只修改
-`agent.draft.batch-size` 的 profile 会保留基础配置中 `[agent.draft]` 的其他
-值。数组整体替换而不是追加。用户和项目文件都定义了所选名称时，项目 profile
-获胜；profile 在两个基础配置之后应用，而 `-c` 和专用选项仍然优先于 profile。
-选择未知的 profile 是错误，profile 不能继承其他 profile，未被选中的 profile
-没有任何影响。YakiFlow 会把完整解析后的设置随任务保存，因此续跑不依赖
-profile 或配置文件仍然存在。
+profile 只覆盖其中写出的设置，其他值沿用基础配置；数组会整体替换。
+项目与用户配置定义同名 profile 时，项目中的设置优先。续跑会保留原任务的配置，
+无需保留原来的 profile 文件。
 
 ### 审校用的参考文件
 
@@ -445,8 +429,7 @@ profile 或配置文件仍然存在。
 yakiflow run video.mp4 --context-file danmaku.xml --context-file speakers.txt
 ```
 
-YakiFlow 会把每个文件快照到任务工作目录的 `context/` 下，因此续跑不依赖原始
-参考文件。
+参考文件会随任务保存，续跑时无需再次提供。
 
 ## 审校与翻译记忆
 
@@ -454,10 +437,9 @@ YakiFlow 会把每个文件快照到任务工作目录的 `context/` 下，因�
 文件、应用商定的修改，并可以提议可复用的名称、术语或风格偏好。只有在你确认
 后才会更新记忆。
 
-审校 Agent 用目标语言与你交流；如果你换用其他语言，它也会跟着切换。当目标
-语言无法保持原文的断句方式时，它可能合并这些字幕，并把合并同步到每个配置的
-输出文件。使用支持说话人识别的后端时，不同说话人的字幕在时间上重叠是正常
-现象，会原样保留。
+可以直接告诉 Agent：“把这个人名统一译为……”“这句话太长，请重新断句”或
+“后续任务也沿用这个术语”。Agent 默认用目标语言交流，也能跟随你切换语言。
+通过顶层 `memory` 设置指定记忆文件，可在多个任务间共用术语和风格偏好。
 
 默认情况下，YakiFlow 会在可能时用 `tmux` 在 Agent 旁边显示一个只读字幕面板。
 在该面板中按 `o` 可用 `mpv` 打开带当前字幕的媒体。要换用其他播放器：
@@ -479,17 +461,15 @@ open-command = "code --reuse-window {workdir} {subtitle} {memory}"
 ```
 
 `display-mode = "both"` 可以同时打开编辑器并保留分屏预览。`open-command` 支持
-`{subtitle}`、`{workdir}` 和 `{memory}` 占位符。占位符不要加引号；YakiFlow 会
-把替换后的路径（包括含空格的路径）安全地保持为单个参数。模板按 shell 风格
-解析参数，但最终命令不经过 shell 直接启动。
+`{subtitle}`、`{workdir}` 和 `{memory}` 占位符。占位符不要加引号，即使路径
+包含空格也能使用。
 
 在 CI 中或输入输出被重定向时，会跳过交互审校，直接完成批量结果。
 
 ## 可选：改善字幕时间轴
 
-以下选项适用于 Whisper 后端。ElevenLabs 后端本身提供词级精度的时间轴，默认
-`alignment.backend = "none"`；即使如此，每条字幕仍会在最后一个词说完后多留
-一会儿，而不是立刻消失。
+Whisper 用户可以尝试以下选项，改善字幕出现和消失的时间。云端转录通常无需
+额外对齐。
 
 ### VAD
 
@@ -498,8 +478,6 @@ whisper.cpp 版本支持的模型，然后配置其路径：
 
 ```toml
 [whisper]
-stream-chunk-seconds = 15
-stream-context-seconds = 5
 vad-model = "/absolute/path/to/ggml-silero-v6.2.0.bin"
 ```
 
@@ -511,8 +489,8 @@ vad-model = "/absolute/path/to/ggml-silero-v6.2.0.bin"
 
 ### WhisperX 强制对齐
 
-WhisperX 是可选的，只调整时间轴；转录仍由 whisper.cpp 完成。当前 extra 需要
-Python 3.12 或 3.13。用 uv 安装两种变体之一：
+WhisperX 可以进一步改善字幕时间轴。需要 Python 3.12 或 3.13，用 uv 安装
+两种变体之一：
 
 ```console
 # CPU
@@ -537,9 +515,6 @@ yakiflow doctor -c alignment.backend=whisperx
 首次运行可能下载 NLTK 数据和语言专用的对齐模型。如果对齐初始化在交互式运行中
 失败，YakiFlow 允许重试或退回 VAD；非交互式运行会保留任务供以后恢复。
 
-`whisperx` 可以和 `elevenlabs.diarize` 同时使用。与另一位说话人重叠的字幕保留
-原始时间，同时说话的效果得以保留；其余字幕照常对齐。
-
 ## 疑难解答
 
 - 先用与运行相同的选项执行 `yakiflow doctor`。
@@ -549,132 +524,7 @@ yakiflow doctor -c alignment.backend=whisperx
 - 缺少默认 Whisper 模型时，运行 `yakiflow models fetch`。
 - 配置了自定义模型路径时，YakiFlow 要求该文件已经存在，不会替换它。
 - `yt-dlp` 的故障只影响 URL 输入；whisper.cpp 的故障只影响 Whisper 后端。
-- ElevenLabs 任务因 key 报错停止时，`yakiflow doctor` 会显示 key 将来自哪个
-  来源。
+- 云端任务因 key 报错停止时，`yakiflow doctor` 会显示 key 的来源。
 - 审校没有字幕面板时，安装 `tmux` 或配置 `review.display-mode = "open"`。
 - 失败后请保留打印出的工作目录。其中包含诊断或恢复运行所需的任务日志和进程
   日志。
-
-## 开发
-
-```console
-uv sync --extra dev
-uv run --extra dev pytest
-```
-
-直播采集使用 `transcription.stream-backend` 和 `agent.stream`（逐项继承
-`agent.draft`）。停止后先提交剩余音频并接收最终结果，再选择直接 review、
-以非 stream 后端重转录完整录音、或退出保留录音和工作目录。无可用结果时禁用
-直接 review。直接 review 保留实时时间戳；交互 review 使用 `agent.final`。
-重转录使用 `transcription.backend`、`agent.draft` 与正常 alignment，资源检查
-通过后清除实时词、翻译和覆盖状态。resume 恢复已选流程或再次询问；无 TTY
-时自动重转录。配置 schema 3 拒绝旧 `[stream]`，不迁移旧工作目录。
-
-### Fun-ASR
-
-```toml
-[transcription]
-backend = "fun-asr"       # auto stream-backend: fun-asr-stream
-
-[fun-asr]
-model = "fun-asr"
-realtime-model = "fun-asr-realtime"
-api-url = "https://dashscope.aliyuncs.com/api/v1"
-realtime-url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
-max-minutes = 720
-chunk-overlap-seconds = 30
-diarize-max-minutes = 120
-diarize-over-limit = "disable" # or "split"
-# api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
-```
-
-安装 `yakiflow[fun-asr]`。凭据优先级为 CLI、`DASHSCOPE_API_KEY`、配置、
-`yakiflow secret set fun-asr`（需 `[keyring]`）。非实时通过 HTTP 上传到百炼
-临时 OSS，再提交、轮询并下载；持久化上传信息、任务 ID 和原始结果，恢复时
-继续已有任务。链接过期及任务/子任务失败会明确报错，不自动重复提交付费任务。
-上传受 1 GB 临时存储限制及上传 policy 限制，单次请求最长 12 小时，长录音自动拆分；
-Flash 不支持。API 地址可配置业务空间域名。
-
-默认 `diarize-over-limit = "disable"` 时，完整录音严格短于
-`diarize-max-minutes` 才开启说话人分离；`"split"` 则保持开启并按此阈值分块。
-`0` 始终关闭，默认 120
-来自[官方两小时建议](https://help.aliyun.com/zh/model-studio/fun-asr-recorded-speech-recognition-http-api)。
-实际状态持久化，字幕、翻译、review 和 resume 一致。实时不支持说话人分离，
-使用官方 DashScope SDK（WebSocket），临时句仅预览，最终句持久化；停止等待
-最后结果。非实时使用词级流程，实时使用片段时间；默认不额外 alignment。
-
-### MAI
-
-```toml
-[transcription]
-backend = "mai"          # auto stream-backend: mai-stream
-
-[mai]
-# region = "swedencentral" # or SPEECH_REGION
-# endpoint = "https://YourResourceName.cognitiveservices.azure.com"
-model = "MAI-Transcribe-2"
-realtime-model = "MAI-Transcribe-2-Streaming"
-max-minutes = 120
-chunk-overlap-seconds = 30
-diarize-max-minutes = 15
-diarize-over-limit = "disable" # or "split"
-# api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
-```
-
-安装 `yakiflow[mai]`（实时需 Speech SDK >= 1.52）。凭据优先级为 CLI、
-`SPEECH_KEY`、配置、`yakiflow secret set mai`（需 `[keyring]`）。region 可通过
-`mai.region` 或 `SPEECH_REGION` 设置；非实时也可用可选 `mai.endpoint`，支持
-资源基础地址或完整转录 URL。实时使用 region 的 universal v2 WebSocket 地址，
-由[官方 Speech SDK](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe-2-streaming-speech-sdk)
-处理。doctor 按当前阶段检查依赖及凭据。
-
-[非实时 REST](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe)
-使用 multipart 和 enhanced mode，请求逐词时间戳。每块必须短于 2 小时、文件
-小于 250 MB，长录音及大文件自动拆分。默认 `diarize-over-limit = "disable"` 时，
-完整录音严格短于 `diarize-max-minutes` 才开启说话人分离，默认 15 是预览版的
-保守值；达到 15 分钟即对所有块关闭。`"split"` 保持开启并按此阈值分块；
-`0` 始终关闭。
-覆盖值必须为非负整数。实际启用状态、原始请求和响应持久化，resume 复用。
-默认不额外 alignment。实时按片段起止时间处理，临时结果仅预览，最终结果
-持久化；关闭 PCM 输入后等待最后结果，线程回调安全进入 asyncio，处理
-取消、NoMatch 和服务错误；实时不开启说话人分离。
-
-### 批量时长限制与恢复
-
-`elevenlabs`、`fun-asr` 和 `mai` 共用自动分块逻辑。在对应 backend 的 TOML 表内
-设置 `max-minutes` 和 `chunk-overlap-seconds`，或通过 `-c` 覆盖，例如
-`-c mai.diarize-over-limit=split -c mai.max-minutes=60`。`max-minutes` 接受有限
-正数，overlap 接受有限非负数。默认单请求时长沿用
-[ElevenLabs](https://elevenlabs.io/docs/overview/capabilities/speech-to-text)、
-[Fun-ASR](https://help.aliyun.com/zh/model-studio/asr-model) 和
-[MAI](https://learn.microsoft.com/en-us/rest/api/speechtotext/transcriptions/transcribe?view=rest-speechtotext-2025-10-15)
-的限制：
-
-| Backend | `max-minutes` | `chunk-overlap-seconds` |
-| --- | ---: | ---: |
-| `elevenlabs` | 600 | 30 |
-| `fun-asr` | 720 | 30 |
-| `mai` | 120 | 30 |
-
-达到时长上限即自动拆分。只计算一次计划，单块长度取配置时长、provider 文件大小
-对应的 PCM 时长，以及选择 `diarize-over-limit = "split"` 时生效的正数 diarization
-阈值中的最小值。每块包含 overlap 后仍严格低于限制，恰好达到边界时按 PCM 帧
-留出最小余量。Fun-ASR 在首次规划前获取上传 policy，同时遵守 1 GB 临时上传
-限制；MAI 按单块检查 250 MB。overlap 必须小于实际可用块长度，否则上传前报错。
-不提供独立的 diarization overlap 设置。`"disable"` 始终按完整录音判断，短块
-不会重新开启 diarization；`diarize-max-minutes = 0` 始终关闭。
-
-块请求顺序执行。工作目录保存完整计划、逐块原始响应和标准化词；resume 固定原有
-边界，跳过已完成块，并继续轮询该块已经提交的 Fun-ASR 任务。修改请求相关配置
-或输入音频会明确报错，避免混用结果；请恢复原配置或创建新任务。旧整段结果缓存
-和 Fun-ASR 任务 checkpoint 可继续用于整段计划，不能复用于新的分块计划。
-
-合并时恢复原始时间轴，使用归一化文本和邻近时间匹配重叠词，忽略标点差异。
-至少两个一致且对应唯一的匹配词才会复用跨块 speaker 编号；证据不足、平票或
-冲突会分配新编号。overlap 为 0 时不推断 speaker 连续性。静音、转录差异和
-多人同时发言造成的歧义可能使同一个说话人在不同块获得不同编号，无法保证身份
-始终一致。匹配的重复词只保留一次；其他词根据词中心位于重叠区中点的哪一侧
-确定归属，保留完整词时间和不同说话人的同时发言。ElevenLabs 词时长修复在合并
-后执行；完整合并后才进入现有翻译流程。
-
-实时会话仍沿用原有恢复逻辑；直播结束后的批量重转录使用这些配置和分块规则。
