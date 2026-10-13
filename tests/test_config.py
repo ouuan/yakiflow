@@ -44,8 +44,8 @@ def test_config_priority(tmp_path: Path) -> None:
     assert settings.target_language == "zh-CN"
     assert settings.agent.draft.workers == 7
     assert settings.output_mode == "source"
-    assert settings.agent.draft.model == "gpt-5.6-terra"
-    assert settings.agent.final.model == "gpt-5.6-sol"
+    assert settings.agent.draft.model == "gpt-6-luna"
+    assert settings.agent.final.model == "gpt-6.1-sol"
 
 
 def test_dedicated_flags_outrank_c_overrides(tmp_path: Path) -> None:
@@ -201,16 +201,20 @@ def test_stage_resolution_prefers_stage_then_shared_then_default() -> None:
     assert settings.agent.draft.backend == "claude"
     assert settings.agent.draft.model == "sonnet"
     assert settings.agent.final.backend == "codex"
-    assert settings.agent.final.model == "gpt-5.6-sol"
+    assert settings.agent.final.model == "gpt-6.1-sol"
+    assert settings.agent.stream.backend == "codex"
+    assert settings.agent.stream.model == "gpt-6-luna"
     # The shared effort outranks both stage defaults.
     assert settings.agent.draft.effort == "medium"
     assert settings.agent.final.effort == "medium"
+    assert settings.agent.stream.effort == "medium"
 
 
 def test_stage_effort_defaults_apply_when_nothing_is_set() -> None:
     settings = make_settings(agent={"backend": "codex"}).resolved()
-    assert settings.agent.draft.effort == "low"
-    assert settings.agent.final.effort == "high"
+    assert settings.agent.draft.effort == "medium"
+    assert settings.agent.final.effort == "medium"
+    assert settings.agent.stream.effort == "low"
     assert settings.agent.draft.extra_options == ()
     assert settings.agent.final.extra_options == ()
 
@@ -221,10 +225,12 @@ def test_stage_extra_options_inherit_from_shared_table() -> None:
             "backend": "codex",
             "extra-options": ["--shared"],
             "final": {"extra-options": ["--final-only"]},
+            "stream": {"extra-options": []},
         }
     ).resolved()
     assert settings.agent.draft.extra_options == ("--shared",)
     assert settings.agent.final.extra_options == ("--final-only",)
+    assert settings.agent.stream.extra_options == ()
 
 
 def test_only_the_batch_elevenlabs_backend_reports_diarization() -> None:
@@ -690,16 +696,73 @@ def test_settings_schema_version_is_three() -> None:
     assert SETTINGS_SCHEMA_VERSION == 3
 
 
-def test_stream_mapping_and_agent_inheritance():
+def test_stream_mapping_and_independent_defaults():
     settings = _validatable(agent={"backend": "codex", "draft": {"batch_size": 7},
                                    "stream": {"backend": "claude", "workers": 2}})
     assert settings.transcription.stream_backend == "whisper-server"
     assert settings.agent.stream.model == "sonnet"
-    assert settings.agent.stream.batch_size == 7
+    assert settings.agent.stream.batch_size == 3
     assert settings.agent.stream.workers == 2
     assert settings.for_stream().agent.draft.backend == "claude"
+    assert asdict(settings.for_stream().agent.draft) == asdict(settings.agent.stream)
     assert _validatable(transcription={"backend": "elevenlabs"}).transcription.stream_backend == "elevenlabs-stream"
     assert settings.resolved() == settings
+
+
+def test_stream_does_not_inherit_any_draft_setting():
+    baseline = _validatable(agent={"backend": "codex"})
+    settings = _validatable(
+        agent={
+            "backend": "codex",
+            "draft": {
+                "backend": "claude",
+                "model": "custom-draft",
+                "effort": "xhigh",
+                "extra_options": ["--draft-only"],
+                "workers": 7,
+                "batch_size": 11,
+                "preceding_context": 12,
+                "following_context": 13,
+                "word_batch_size": 500,
+                "word_following_context": 60,
+                "timeout_seconds": 900,
+                "max_attempts": 5,
+                "retry_delay_seconds": 4,
+            },
+        }
+    )
+    assert settings.agent.stream == baseline.agent.stream
+
+
+def test_stream_shared_keys_and_explicit_overrides():
+    settings = _validatable(
+        agent={
+            "backend": "codex",
+            "model": "shared-model",
+            "effort": "high",
+            "extra_options": ["--shared"],
+            "stream": {"effort": "low", "batch_size": 5, "word_batch_size": 120},
+        }
+    )
+    assert settings.agent.stream.backend == "codex"
+    assert settings.agent.stream.model == "shared-model"
+    assert settings.agent.stream.effort == "low"
+    assert settings.agent.stream.extra_options == ("--shared",)
+    selected = settings.for_stream()
+    assert selected.agent.draft.batch_size == 5
+    assert selected.agent.draft.word_batch_size == 120
+    assert selected.agent.draft.effort == "low"
+    assert selected.resolved() == selected
+
+
+def test_stored_stream_settings_keep_explicit_values():
+    original = _validatable(
+        agent={"backend": "codex", "stream": {"batch_size": 20, "effort": "high"}}
+    )
+    resumed = load_settings(
+        stored=asdict(original), user_file=MISSING, project_file=MISSING
+    )
+    assert resumed.agent.stream == original.agent.stream
 
 
 def test_old_stream_configuration_is_rejected(tmp_path):
@@ -716,4 +779,4 @@ def test_resumed_stream_agent_backend_switch_uses_new_backend_default():
     settings = load_settings(stored=stored, user_file=MISSING, project_file=MISSING,
                              cli_config={"agent": {"stream": {"backend": "claude"}}})
     assert settings.agent.stream.model == "sonnet"
-    assert settings.agent.stream.batch_size == settings.agent.draft.batch_size
+    assert settings.agent.stream.batch_size == stored["agent"]["stream"]["batch_size"]

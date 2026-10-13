@@ -375,15 +375,16 @@ output-dir = "./subtitles"
 backend = "codex"        # 或 claude
 
 [agent.draft]
-effort = "medium"
+effort = "high"
 
 [review]
 auto-open-video = true
 ```
 
 `[agent]` 设置同时用于翻译和审校。可在 `[agent.draft]`、`[agent.final]` 中
-分别设置 `backend`、`model` 和 `effort`；直播翻译使用 `[agent.stream]`，未设置的
-选项沿用 `[agent.draft]`。账户无法使用默认模型时，通过这些设置指定可用模型。
+分别设置 `backend`、`model` 和 `effort`；直播翻译使用 `[agent.stream]`，采用独立
+默认值，并从 `[agent]` 继承共享设置。账户无法使用默认模型时，通过这些设置
+指定可用模型。
 
 额外命令行参数写成字符串数组，选项与其值分别占一个元素：
 
@@ -510,35 +511,38 @@ Agent 的额外参数同样可通过 `agent.extra-options` 或各阶段的 `extr
 
 | 表内的键 | 默认值 / 继承规则 | 含义 / 可选值 |
 | --- | --- | --- |
-| `backend` | `[agent]` 未设置；draft 和 final 继承它 | `codex` 或 `claude`。draft 和 final 均必填，可共享设置或按阶段指定。 |
-| `model` | `[agent]` 未设置；draft 和 final 继承它，再使用下表中的阶段默认值 | Agent 模型名称。 |
-| `effort` | `[agent]` 未设置；draft 和 final 继承它，再使用下表中的阶段默认值 | `minimal`、`low`、`medium`、`high` 或 `xhigh`。 |
-| `extra-options` | `[agent]` 未设置；draft 和 final 继承它，否则为 `[]` | Agent CLI 额外参数的字符串数组；显式设置 `[]` 清除继承的参数。 |
+| `backend` | `[agent]` 未设置；三个阶段均继承它 | `codex` 或 `claude`。当前翻译阶段（draft 或 stream）和 final 均必填，可共享设置或按阶段指定。 |
+| `model` | `[agent]` 未设置；三个阶段均继承它，再使用下表中的阶段默认值 | Agent 模型名称。 |
+| `effort` | `[agent]` 未设置；三个阶段均继承它，再使用下表中的阶段默认值 | `minimal`、`low`、`medium`、`high` 或 `xhigh`。 |
+| `extra-options` | `[agent]` 未设置；三个阶段均继承它，否则为 `[]` | Agent CLI 额外参数的字符串数组；显式设置 `[]` 清除继承的参数。 |
 
 | 阶段 | 默认 Codex 模型 | 默认 Claude 模型 | 默认 effort |
 | --- | --- | --- | --- |
-| `agent.draft` | `gpt-5.6-terra` | `sonnet` | `low` |
-| `agent.final` | `gpt-5.6-sol` | `opus` | `high` |
+| `agent.draft` | `gpt-6-luna` | `sonnet` | `medium` |
+| `agent.stream` | `gpt-6-luna` | `sonnet` | `low` |
+| `agent.final` | `gpt-6.1-sol` | `opus` | `medium` |
 
-`[agent.stream]` 所有未设置的选项均继承解析后的 `[agent.draft]` 值，
-包括下面的调优选项。stream 显式切换后端却没有指定模型时，使用新后端的
-draft 默认模型。这些是 YakiFlow 内置的模型名称；可用 `model` 指定账户可用模型。
+各阶段独立解析共享项，优先级为：阶段设置 → `[agent]` → 阶段内置默认值。
+`[agent.stream]` 不从 `[agent.draft]` 继承，调优选项使用下表中的 stream 默认值。
+这些是 YakiFlow 内置的模型名称；可用 `model` 指定账户可用模型。
 
 以下键仅用于 `[agent.draft]` 和 `[agent.stream]`，例如 `agent.draft.workers`
 或 `agent.stream.workers`；不能放在 `[agent]` 或 `[agent.final]` 中。
-表中的默认值用于 draft，stream 未覆盖时继承 draft。
 
-| 表内的键 | Draft 默认值 | 含义 / 可选值 |
-| --- | --- | --- |
-| `workers` | `4` | 草稿 Agent 调用的最大并发数；正整数。 |
-| `batch-size` | `20` | 基于字幕条目的转录每批翻译的条数；正整数。 |
-| `preceding-context` | `10` | 作为上下文提供的前文字幕条数；非负整数，也用于按词分批。 |
-| `following-context` | `5` | 按字幕条目分批时提供的后文原文字幕条数；非负整数。 |
-| `word-batch-size` | `400` | 基于词的转录每批分段、翻译的目标词数；至少为 50 的整数。 |
-| `word-following-context` | `40` | 按词分批时提供的后文原文词数；非负整数。 |
-| `timeout-seconds` | `600` | 每次草稿 Agent 尝试的超时秒数；正数。 |
-| `max-attempts` | `3` | 每批最大尝试次数，包含首次尝试；正整数。 |
-| `retry-delay-seconds` | `1` | 失败后重试前的等待秒数；非负数。 |
+| 表内的键 | Draft 默认值 | Stream 默认值 | 含义 / 可选值 |
+| --- | --- | --- | --- |
+| `workers` | `4` | `4` | 草稿 Agent 调用的最大并发数；正整数。 |
+| `batch-size` | `20` | `3` | 基于字幕条目的转录每批翻译的条数；正整数。 |
+| `preceding-context` | `10` | `6` | 作为上下文提供的前文字幕条数；非负整数，也用于按词分批。 |
+| `following-context` | `5` | `0` | 按字幕条目分批时提供的后文原文字幕条数；非负整数。 |
+| `word-batch-size` | `200` | `80` | 基于词的转录每批分段、翻译的目标词数；至少为 50 的整数。 |
+| `word-following-context` | `40` | `0` | 按词分批时提供的后文原文词数；非负整数。 |
+| `timeout-seconds` | `600` | `120` | 每次草稿 Agent 尝试的超时秒数；正数。 |
+| `max-attempts` | `3` | `2` | 每批最大尝试次数，包含首次尝试；正整数。 |
+| `retry-delay-seconds` | `1` | `1` | 失败后重试前的等待秒数；非负数。 |
+
+Draft 默认值侧重吞吐和上下文，stream 默认值侧重小批次频繁输出和更短的失败恢复。
+这些数值是调优起点，不保证固定延迟：直播的按词分批还需等待满足条件的静音间隔。
 
 #### 审校与命令
 

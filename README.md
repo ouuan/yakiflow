@@ -410,7 +410,7 @@ output-dir = "./subtitles"
 backend = "codex"        # or claude
 
 [agent.draft]
-effort = "medium"
+effort = "high"
 
 [review]
 auto-open-video = true
@@ -418,9 +418,9 @@ auto-open-video = true
 
 `[agent]` settings apply to translation and review. Set `backend`, `model`, and
 `effort` separately in `[agent.draft]` and `[agent.final]` to customize each.
-Live translation uses `[agent.stream]`, inheriting unspecified options from
-`[agent.draft]`. If your account cannot use a default model, choose an available
-model with these settings.
+Live translation uses `[agent.stream]`, with independent defaults and shared
+settings from `[agent]`. If your account cannot use a default model, choose an
+available model with these settings.
 
 Write extra command-line arguments as string arrays, with an option and its
 value in separate items:
@@ -554,38 +554,42 @@ shared choice or `agent.final.backend` to override review only.
 
 | Key within the table | Default / inheritance | Meaning / accepted values |
 | --- | --- | --- |
-| `backend` | Unset in `[agent]`; draft and final inherit it | `codex` or `claude`. Required for both draft and final, either shared or set per stage. |
-| `model` | Unset in `[agent]`; draft and final inherit it, then use the stage default below | Agent model name. |
-| `effort` | Unset in `[agent]`; draft and final inherit it, then use the stage default below | `minimal`, `low`, `medium`, `high`, or `xhigh`. |
-| `extra-options` | Unset in `[agent]`; draft and final inherit it, otherwise `[]` | Additional Agent CLI arguments as a string array; `[]` explicitly clears inherited arguments. |
+| `backend` | Unset in `[agent]`; all three stages inherit it | `codex` or `claude`. Required for the active translation stage (draft or stream) and final, either shared or set per stage. |
+| `model` | Unset in `[agent]`; all three stages inherit it, then use the stage default below | Agent model name. |
+| `effort` | Unset in `[agent]`; all three stages inherit it, then use the stage default below | `minimal`, `low`, `medium`, `high`, or `xhigh`. |
+| `extra-options` | Unset in `[agent]`; all three stages inherit it, otherwise `[]` | Additional Agent CLI arguments as a string array; `[]` explicitly clears inherited arguments. |
 
 | Stage | Default Codex model | Default Claude model | Default effort |
 | --- | --- | --- | --- |
-| `agent.draft` | `gpt-5.6-terra` | `sonnet` | `low` |
-| `agent.final` | `gpt-5.6-sol` | `opus` | `high` |
+| `agent.draft` | `gpt-6-luna` | `sonnet` | `medium` |
+| `agent.stream` | `gpt-6-luna` | `sonnet` | `low` |
+| `agent.final` | `gpt-6.1-sol` | `opus` | `medium` |
 
-Every omitted `[agent.stream]` setting inherits the resolved `[agent.draft]`
-value, including the tuning keys below. If stream explicitly switches backend
-without specifying a model, it uses the draft model default for that backend.
+Each stage resolves its shared keys independently: stage setting, then
+`[agent]`, then its built-in default. `[agent.stream]` does not inherit from
+`[agent.draft]`; its tuning keys use the stream defaults below.
 These are YakiFlow's built-in model names; set `model` to a model your account
 can access.
 
 The following keys are available in `[agent.draft]` and `[agent.stream]`, for
 example `agent.draft.workers` or `agent.stream.workers`. They are not accepted
-in `[agent]` or `[agent.final]`. Defaults below are for draft; stream inherits
-draft unless overridden.
+in `[agent]` or `[agent.final]`.
 
-| Key within the table | Draft default | Meaning / accepted values |
-| --- | --- | --- |
-| `workers` | `4` | Positive integer maximum concurrent draft Agent calls. |
-| `batch-size` | `20` | Positive integer cues per translation batch for cue-based transcription. |
-| `preceding-context` | `10` | Nonnegative integer preceding cues supplied as context; also used for word-based batches. |
-| `following-context` | `5` | Nonnegative integer following source cues supplied as context for cue-based batches. |
-| `word-batch-size` | `400` | Target words per segmentation/translation batch for word-based transcription; integer of at least 50. |
-| `word-following-context` | `40` | Nonnegative integer following source words supplied as context for word-based batches. |
-| `timeout-seconds` | `600` | Positive timeout in seconds for each draft Agent attempt. |
-| `max-attempts` | `3` | Positive integer maximum attempts per batch, including the first attempt. |
-| `retry-delay-seconds` | `1` | Nonnegative delay in seconds between failed attempts. |
+| Key within the table | Draft default | Stream default | Meaning / accepted values |
+| --- | --- | --- | --- |
+| `workers` | `4` | `4` | Positive integer maximum concurrent draft Agent calls. |
+| `batch-size` | `20` | `3` | Positive integer cues per translation batch for cue-based transcription. |
+| `preceding-context` | `10` | `6` | Nonnegative integer preceding cues supplied as context; also used for word-based batches. |
+| `following-context` | `5` | `0` | Nonnegative integer following source cues supplied as context for cue-based batches. |
+| `word-batch-size` | `200` | `80` | Target words per segmentation/translation batch for word-based transcription; integer of at least 50. |
+| `word-following-context` | `40` | `0` | Nonnegative integer following source words supplied as context for word-based batches. |
+| `timeout-seconds` | `600` | `120` | Positive timeout in seconds for each draft Agent attempt. |
+| `max-attempts` | `3` | `2` | Positive integer maximum attempts per batch, including the first attempt. |
+| `retry-delay-seconds` | `1` | `1` | Nonnegative delay in seconds between failed attempts. |
+
+Draft defaults favor throughput and context; stream defaults favor smaller,
+more frequent batches and shorter failure recovery. These are starting points,
+not a latency guarantee: live word batches also wait for a qualified silence.
 
 #### Review and commands
 

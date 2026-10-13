@@ -165,13 +165,13 @@ class DraftAgentSettings:
     model: str | None = None
     effort: str | None = None
     extra_options: tuple[str, ...] | None = _argv(None)
-    # Everything below only means something for batch drafting, so writing it
+    # Everything below only means something for drafting, so writing it
     # into [agent] or [agent.final] is an unknown-key error by construction.
     workers: int = 4
     batch_size: int = 20
     preceding_context: int = 10
     following_context: int = 5
-    word_batch_size: int = 400
+    word_batch_size: int = 200
     word_following_context: int = 40
     timeout_seconds: float = 600
     max_attempts: int = 3
@@ -184,15 +184,16 @@ class StreamAgentSettings:
     model: str | None = None
     effort: str | None = None
     extra_options: tuple[str, ...] | None = _argv(None)
-    workers: int | None = None
-    batch_size: int | None = None
-    preceding_context: int | None = None
-    following_context: int | None = None
-    word_batch_size: int | None = None
-    word_following_context: int | None = None
-    timeout_seconds: float | None = None
-    max_attempts: int | None = None
-    retry_delay_seconds: float | None = None
+    # Capture uses its own latency-oriented defaults, independent of draft.
+    workers: int = 4
+    batch_size: int = 3
+    preceding_context: int = 6
+    following_context: int = 0
+    word_batch_size: int = 80
+    word_following_context: int = 0
+    timeout_seconds: float = 120
+    max_attempts: int = 2
+    retry_delay_seconds: float = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,10 +232,11 @@ class CommandsSettings:
 
 
 _STAGE_MODEL_DEFAULTS = {
-    "draft": {"codex": "gpt-5.6-terra", "claude": "sonnet"},
-    "final": {"codex": "gpt-5.6-sol", "claude": "opus"},
+    "draft": {"codex": "gpt-6-luna", "claude": "sonnet"},
+    "stream": {"codex": "gpt-6-luna", "claude": "sonnet"},
+    "final": {"codex": "gpt-6.1-sol", "claude": "opus"},
 }
-_STAGE_EFFORT_DEFAULTS = {"draft": "low", "final": "high"}
+_STAGE_EFFORT_DEFAULTS = {"draft": "medium", "stream": "low", "final": "medium"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,27 +307,10 @@ class Settings:
                 else "vad"
             ),
         )
-        draft = self._resolved_stage(self.agent.draft, "draft")
-        stream_values = {
-            f.name: (
-                getattr(self.agent.stream, f.name)
-                if getattr(self.agent.stream, f.name) is not None
-                else getattr(draft, f.name)
-            )
-            for f in fields(draft)
-        }
-        if (
-            self.agent.stream.backend
-            and self.agent.stream.backend != draft.backend
-            and not self.agent.stream.model
-        ):
-            stream_values["model"] = _STAGE_MODEL_DEFAULTS["draft"].get(
-                self.agent.stream.backend
-            )
         agent = replace(
             self.agent,
-            draft=draft,
-            stream=StreamAgentSettings(**stream_values),
+            draft=self._resolved_stage(self.agent.draft, "draft"),
+            stream=self._resolved_stage(self.agent.stream, "stream"),
             final=self._resolved_stage(self.agent.final, "final"),
         )
         return replace(
@@ -376,8 +361,10 @@ class Settings:
         )
 
     def _resolved_stage(
-        self, stage: DraftAgentSettings | FinalAgentSettings, name: str
-    ) -> DraftAgentSettings | FinalAgentSettings:
+        self,
+        stage: DraftAgentSettings | StreamAgentSettings | FinalAgentSettings,
+        name: str,
+    ) -> DraftAgentSettings | StreamAgentSettings | FinalAgentSettings:
         """Resolve one stage: stage value, then [agent] shared, then default."""
         backend = stage.backend or self.agent.backend
         model = stage.model or self.agent.model
