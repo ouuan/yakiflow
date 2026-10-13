@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda'",
@@ -52,7 +52,7 @@ dependencies = [
     { name = "frozenlist" },
     { name = "multidict" },
     { name = "propcache" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda')" },
     { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/d9/22ce5786ac0c1653ae8b6c23bded02c1686d11f0dbb45b31ce128e0df985/aiohttp-3.14.3.tar.gz", hash = "sha256:9491196535a88924a60afd5b5f434b5b203b6cc616250878dbdb223a8f7844bc", size = 7971213, upload-time = "2026-07-23T01:57:27.037Z" }
@@ -147,7 +147,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -166,6 +166,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1a/cc/ac0bed8e562e7407fe55c3ba85a4dce86e6dbd8730887bd1e406a6c5c18a/alembic-1.18.5.tar.gz", hash = "sha256:1554982221dd17e9a749b53902407578eb305e453f71999e8c7f0a48389fff8e", size = 2060480, upload-time = "2026-06-25T15:20:54.888Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/78/5fe6dc3a3a5b2f5a2a4faef8bfe336d5fa049a38884ab3172e0098160c01/alembic-1.18.5-py3-none-any.whl", hash = "sha256:06d8ba9d04558022f5395e9317de03d270f3dced49cee01f89fe7a13c26f14bc", size = 264664, upload-time = "2026-06-25T15:20:56.673Z" },
+]
+
+[[package]]
+name = "annotated-doc"
+version = "0.0.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/8e/38aa427ed5402449e226975b649c5dc73ccadfefeb95e6aecb8f8ea4b6b6/annotated_doc-0.0.5.tar.gz", hash = "sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb", size = 10758, upload-time = "2026-07-28T13:50:58.129Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl", hash = "sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101", size = 5302, upload-time = "2026-07-28T13:50:57.239Z" },
 ]
 
 [[package]]
@@ -261,7 +270,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "(implementation_name != 'PyPy' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (implementation_name != 'PyPy' and sys_platform == 'darwin' and extra != 'extra-8-yakiflow-whisperx-cpu') or (implementation_name != 'PyPy' and sys_platform == 'emscripten' and extra != 'extra-8-yakiflow-whisperx-cpu' and extra != 'extra-8-yakiflow-whisperx-cuda') or (implementation_name != 'PyPy' and sys_platform == 'win32' and extra != 'extra-8-yakiflow-whisperx-cpu' and extra != 'extra-8-yakiflow-whisperx-cuda') or (implementation_name == 'PyPy' and extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda') or (sys_platform == 'darwin' and extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda') or (sys_platform == 'emscripten' and extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda') or (sys_platform == 'win32' and extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -506,7 +515,7 @@ name = "cryptography"
 version = "50.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (platform_python_implementation != 'PyPy' and sys_platform == 'darwin' and extra != 'extra-8-yakiflow-whisperx-cpu') or (platform_python_implementation != 'PyPy' and sys_platform == 'emscripten' and extra != 'extra-8-yakiflow-whisperx-cpu' and extra != 'extra-8-yakiflow-whisperx-cuda') or (platform_python_implementation != 'PyPy' and sys_platform == 'win32' and extra != 'extra-8-yakiflow-whisperx-cpu' and extra != 'extra-8-yakiflow-whisperx-cuda') or (platform_python_implementation == 'PyPy' and extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda') or (sys_platform == 'darwin' and extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda') or (sys_platform == 'emscripten' and extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda') or (sys_platform == 'win32' and extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda')" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/de/41/6cbdcf9142d00fe82836fbb51e503e58088575cf7a0fe1dbff6695bf0840/cryptography-50.0.0.tar.gz", hash = "sha256:eeac2acb5a20ed25e0ad6d1df9891a520b78b404266b6d11778f25d5d691a6c9", size = 880201, upload-time = "2026-07-31T14:25:10.11Z" }
 wheels = [
@@ -590,6 +599,27 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a9/95/a3dbbb5028f35eafb79008e7522a75244477d2838f38cbb722248dabc2a8/cycler-0.12.1.tar.gz", hash = "sha256:88bb128f02ba341da8ef447245a9e138fae777f6a23943da4540077d3601eb1c", size = 7615, upload-time = "2023-10-07T05:32:18.335Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl", hash = "sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30", size = 8321, upload-time = "2023-10-07T05:32:16.783Z" },
+]
+
+[[package]]
+name = "dashscope"
+version = "1.27.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "certifi" },
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "typer" },
+    { name = "typing-extensions" },
+    { name = "websocket-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/a8/c92b104a7e7f47b74d79904c1ff29dbca470c090ce805beecb29abbe4888/dashscope-1.27.7.tar.gz", hash = "sha256:6736697d8308f051a19616f64f85f7bd3d52abf52e9689a66ea18642df3cc757", size = 1829398, upload-time = "2026-09-24T05:12:21.762Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/6f/912e99746b5b5bed6db875dd56b00a9d4401a0abf6180d77c1f961f4972f/dashscope-1.27.7-py3-none-any.whl", hash = "sha256:e034664fc78d487bd949753807abc2640c154cfcecff7a59b8b2a4b6ec156bf9", size = 2010509, upload-time = "2026-09-24T05:12:18.729Z" },
 ]
 
 [[package]]
@@ -988,6 +1018,15 @@ wheels = [
 [package.optional-dependencies]
 socks = [
     { name = "socksio" },
+]
+
+[[package]]
+name = "httpx-sse"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/4c/751061ffa58615a32c31b2d82e8482be8dd4a89154f003147acee90f2be9/httpx_sse-0.4.3.tar.gz", hash = "sha256:9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d", size = 15943, upload-time = "2025-10-10T21:48:22.271Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl", hash = "sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc", size = 8960, upload-time = "2025-10-10T21:48:21.158Z" },
 ]
 
 [[package]]
@@ -2828,6 +2867,15 @@ wheels = [
 ]
 
 [[package]]
+name = "shellingham"
+version = "1.5.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/15/8b3609fd3830ef7b27b655beb4b4e9c62313a4e8da8c676e142cc210d58e/shellingham-1.5.4.tar.gz", hash = "sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de", size = 10310, upload-time = "2023-10-24T04:13:40.426Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl", hash = "sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686", size = 9755, upload-time = "2023-10-24T04:13:38.866Z" },
+]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3424,6 +3472,21 @@ wheels = [
 ]
 
 [[package]]
+name = "typer"
+version = "0.27.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-yakiflow-whisperx-cpu' and extra == 'extra-8-yakiflow-whisperx-cuda')" },
+    { name = "rich" },
+    { name = "shellingham" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/03/51/d33db42cc72ffd8c30777547b42d01f0cbf9d95a770457698d0174b3ed71/typer-0.27.3.tar.gz", hash = "sha256:d0396f770a560ab1b0a8504e13b5f254b728cedb05c61cf0359e944e50ce8901", size = 205303, upload-time = "2026-10-06T17:24:16.61Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/ea/2e31b67051e91a133189e9c000c222502ddc6969856416de0d095de4c0b0/typer-0.27.3-py3-none-any.whl", hash = "sha256:e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff", size = 123312, upload-time = "2026-10-06T17:24:15.054Z" },
+]
+
+[[package]]
 name = "typing-extensions"
 version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3469,6 +3532,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602, upload-time = "2026-05-07T16:13:18.596Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
+]
+
+[[package]]
+name = "websocket-client"
+version = "1.9.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/cb/a5abcc2891249f393827c650c6296660ce40374ac22d99ab9aea41f9d2a2/websocket_client-1.9.2.tar.gz", hash = "sha256:0fcb57545848be86992e128218fd96dd87a6769ffdb1a968dff79632b85604d0", size = 84110, upload-time = "2026-08-31T14:08:40.964Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/d2/cc4dc1271e464942db7ee278baae2daa99ee77cb2af744025c04da585a3e/websocket_client-1.9.2-py3-none-any.whl", hash = "sha256:e1a673830a9c7bfa47b1cd3d5e4178f4c9651d80a4eab02c9c23a1c3ec6250ce", size = 95786, upload-time = "2026-08-31T14:08:39.899Z" },
 ]
 
 [[package]]
@@ -3611,6 +3683,10 @@ elevenlabs = [
     { name = "elevenlabs" },
     { name = "websockets" },
 ]
+fun-asr = [
+    { name = "dashscope" },
+    { name = "httpx" },
+]
 keyring = [
     { name = "keyring" },
 ]
@@ -3638,7 +3714,9 @@ whisperx-cuda = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dashscope", marker = "extra == 'fun-asr'", specifier = ">=1.23.1,<2" },
     { name = "elevenlabs", marker = "extra == 'elevenlabs'", specifier = ">=2.60,<3" },
+    { name = "httpx", marker = "extra == 'fun-asr'", specifier = ">=0.27" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'socks'" },
     { name = "keyring", marker = "extra == 'keyring'", specifier = ">=25" },
     { name = "platformdirs", specifier = ">=4.2" },
@@ -3658,7 +3736,7 @@ requires-dist = [
     { name = "whisperx", marker = "extra == 'whisperx-cpu'", specifier = ">=3.8.4,<3.9" },
     { name = "whisperx", marker = "extra == 'whisperx-cuda'", specifier = ">=3.8.4,<3.9" },
 ]
-provides-extras = ["dev", "elevenlabs", "keyring", "socks", "whisperx-cpu", "whisperx-cuda"]
+provides-extras = ["dev", "elevenlabs", "fun-asr", "keyring", "socks", "whisperx-cpu", "whisperx-cuda"]
 
 [[package]]
 name = "yarl"

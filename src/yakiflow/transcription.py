@@ -820,6 +820,10 @@ class WhisperServerTranscriber(Transcriber):
             self._log_tasks = []
 
 
+def word_level_backend(backend: str) -> bool:
+    return backend in {"elevenlabs", "elevenlabs-stream", "fun-asr"}
+
+
 def make_transcriber(
     settings: Settings,
     work_dir: Path,
@@ -839,5 +843,9 @@ def make_transcriber(
             if backend == "elevenlabs"
             else elevenlabs.ElevenLabsRealtimeTranscriber
         )
+        return cls(settings, work_dir, db, runner)
+    if backend in {"fun-asr", "fun-asr-stream"}:
+        from .fun_asr import FunASRTranscriber, FunASRRealtimeTranscriber
+        cls = FunASRTranscriber if backend == "fun-asr" else FunASRRealtimeTranscriber
         return cls(settings, work_dir, db, runner)
     raise ValueError(f"unsupported transcription backend: {backend}")

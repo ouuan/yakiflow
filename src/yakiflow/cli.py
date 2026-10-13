@@ -78,7 +78,7 @@ def _parser() -> argparse.ArgumentParser:
     secret_sub = secret.add_subparsers(dest="secret_command", required=True)
     for verb in ("set", "unset"):
         entry = secret_sub.add_parser(verb)
-        entry.add_argument("name", choices=["elevenlabs"])
+        entry.add_argument("name", choices=["elevenlabs", "fun-asr"])
     return parser
 
 
@@ -244,10 +244,11 @@ def _secret(namespace: argparse.Namespace) -> int:
             "the keyring library is not installed; install yakiflow[keyring] "
             "to store secrets in the OS keyring"
         ) from None
-    from .elevenlabs import KEYRING_ENTRY, KEYRING_SERVICE
+    KEYRING_SERVICE = "yakiflow"
+    KEYRING_ENTRY = namespace.name
 
     if namespace.secret_command == "set":
-        key = _read_secret("ElevenLabs API key: ")
+        key = _read_secret(f"{namespace.name} API key: ")
         if not key:
             raise ValueError("no API key was provided")
         keyring.set_password(KEYRING_SERVICE, KEYRING_ENTRY, key)

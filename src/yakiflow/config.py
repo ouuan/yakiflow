@@ -23,6 +23,8 @@ TRANSCRIPTION_BACKENDS = (
     "whisper-server",
     "elevenlabs",
     "elevenlabs-stream",
+    "fun-asr",
+    "fun-asr-stream",
 )
 EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 
@@ -86,6 +88,19 @@ class ElevenLabsSettings:
     # key resolution can rank that ahead of the environment variable. Internal:
     # a configuration file cannot set it, but a stored job round-trips it.
     api_key_from_cli: bool = field(default=False, metadata={"internal": True})
+
+
+@dataclass(frozen=True, slots=True)
+class FunASRSettings:
+    api_key: str | None = None
+    api_key_file: Path | None = _path()
+    api_key_command: str | None = None
+    api_key_from_cli: bool = field(default=False, metadata={"internal": True})
+    model: str = "fun-asr"
+    realtime_model: str = "fun-asr-realtime"
+    api_url: str = "https://dashscope.aliyuncs.com/api/v1"
+    realtime_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+    diarize_max_minutes: int = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +199,7 @@ _STAGE_EFFORT_DEFAULTS = {"draft": "low", "final": "high"}
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    actual_diarization: bool | None = field(default=None, metadata={"internal": True})
     source_language: str | None = None
     target_language: str | None = None
     output_mode: str = "bilingual"
@@ -196,6 +212,7 @@ class Settings:
     transcription: TranscriptionSettings = _grp(TranscriptionSettings)
     whisper: WhisperSettings = _grp(WhisperSettings)
     elevenlabs: ElevenLabsSettings = _grp(ElevenLabsSettings)
+    fun_asr: FunASRSettings = _grp(FunASRSettings)
     alignment: AlignmentSettings = _grp(AlignmentSettings)
     stream: bool = False
     subtitles: SubtitleSettings = _grp(SubtitleSettings)
@@ -210,9 +227,11 @@ class Settings:
         Only the batch ElevenLabs backend diarizes; the realtime backend and
         the Whisper backends never label speakers.
         """
+        if self.actual_diarization is not None:
+            return self.actual_diarization
         return (
-            self.transcription.backend == "elevenlabs"
-            and self.elevenlabs.diarize
+            (self.transcription.backend == "elevenlabs" and self.elevenlabs.diarize)
+            or (self.transcription.backend == "fun-asr" and self.fun_asr.diarize_max_minutes > 0)
         )
 
     def resolved(self) -> Settings:
@@ -235,7 +254,7 @@ class Settings:
             backend=self.alignment.backend
             or (
                 "none"
-                if self.transcription.backend.startswith("elevenlabs")
+                if not self.transcription.backend.startswith("whisper")
                 else "vad"
             ),
         )
@@ -260,9 +279,10 @@ class Settings:
                 path.expanduser().resolve() for path in self.context_files
             ),
             work_dir=absolute(self.work_dir),
-            transcription=replace(self.transcription, stream_backend=self.transcription.stream_backend or ("whisper-server" if self.transcription.backend.startswith("whisper") else "elevenlabs-stream")),
+            transcription=replace(self.transcription, stream_backend=self.transcription.stream_backend or ("whisper-server" if self.transcription.backend.startswith("whisper") else ("fun-asr-stream" if self.transcription.backend.startswith("fun-asr") else "elevenlabs-stream"))),
             whisper=whisper,
             elevenlabs=elevenlabs,
+            fun_asr=replace(self.fun_asr, api_key_file=absolute(self.fun_asr.api_key_file)),
             alignment=alignment,
             agent=agent,
         )
@@ -431,12 +451,12 @@ def _clean(
             result[key] = tuple(value)
         else:
             result[key] = value
-    if cls is ElevenLabsSettings and source is not None:
+    if cls in (ElevenLabsSettings, FunASRSettings) and source is not None:
         slots = [name for name in _API_KEY_SLOT if name in result]
         if len(slots) > 1:
             listed = ", ".join(name.replace("_", "-") for name in slots)
             raise ValueError(
-                f"elevenlabs.{listed.replace(', ', ' and elevenlabs.')} are "
+                f"{prefix}{listed} are "
                 f"mutually exclusive in {source}: they are three spellings of "
                 "the same API-key setting"
             )
@@ -449,14 +469,13 @@ def _merge_layer(base: dict[str, Any], overlay: Mapping[str, Any]) -> None:
     The ElevenLabs API-key slot merges as a unit: a layer that sets any of its
     three spellings replaces whichever spelling a lower layer had chosen.
     """
-    incoming = overlay.get("elevenlabs")
-    if isinstance(incoming, Mapping) and any(
-        name in incoming for name in _API_KEY_SLOT
-    ):
-        existing = base.get("elevenlabs")
-        if isinstance(existing, dict):
-            for name in _API_KEY_SLOT:
-                existing.pop(name, None)
+    for provider in ("elevenlabs", "fun_asr"):
+        incoming = overlay.get(provider)
+        if isinstance(incoming, Mapping) and any(name in incoming for name in _API_KEY_SLOT):
+            existing = base.get(provider)
+            if isinstance(existing, dict):
+                for name in _API_KEY_SLOT:
+                    existing.pop(name, None)
     _deep_merge(base, overlay)
 
 
@@ -543,9 +562,10 @@ def load_settings(
     flag_layer = _clean(cli or {}, source=None)
     _merge_layer(merged, flag_layer)
     for layer in (config_layer, flag_layer):
-        elevenlabs = layer.get("elevenlabs", {})
-        if any(name in elevenlabs for name in _API_KEY_SLOT):
-            merged.setdefault("elevenlabs", {})["api_key_from_cli"] = True
+        for provider in ("elevenlabs", "fun_asr"):
+            group = layer.get(provider, {})
+            if any(name in group for name in _API_KEY_SLOT):
+                merged.setdefault(provider, {})["api_key_from_cli"] = True
     return _build(merged).resolved()
 
 
@@ -562,8 +582,10 @@ def _require_non_negative(value: float, name: str) -> None:
 def validate_run_settings(settings: Settings) -> None:
     if not isinstance(settings.stream, bool):
         raise ValueError("stream must be a boolean; the old [stream] table is unsupported")
-    if settings.transcription.stream_backend not in {"whisper-cli", "whisper-server", "elevenlabs-stream"}:
+    if settings.transcription.stream_backend not in {"whisper-cli", "whisper-server", "elevenlabs-stream", "fun-asr-stream"}:
         raise ValueError("transcription.stream-backend must be Whisper or a realtime backend")
+    if settings.transcription.backend not in TRANSCRIPTION_BACKENDS:
+        raise ValueError("transcription.backend must be one of " + ", ".join(TRANSCRIPTION_BACKENDS))
     if settings.stream:
         settings = settings.for_stream()
     if not settings.target_language:
@@ -584,7 +606,7 @@ def validate_run_settings(settings: Settings) -> None:
             "output-mode must be source, translated, bilingual, or all "
             "(--output-mode)"
         )
-    word_level = settings.transcription.backend.startswith("elevenlabs")
+    word_level = not settings.transcription.backend.startswith("whisper")
     if settings.whisper.server_url is not None:
         parsed = urlparse(settings.whisper.server_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -601,10 +623,25 @@ def validate_run_settings(settings: Settings) -> None:
         )
     if settings.alignment.device not in {"auto", "cpu", "cuda"}:
         raise ValueError("alignment.device must be auto, cpu, or cuda")
-    if word_level:
+    if settings.transcription.backend.startswith("fun-asr"):
+        from .cloud import api_key
+        api_key(settings, "fun-asr", "DASHSCOPE_API_KEY")
+    if settings.transcription.backend.startswith("elevenlabs"):
         from .elevenlabs import elevenlabs_api_key
 
         elevenlabs_api_key(settings)
+    threshold = settings.fun_asr.diarize_max_minutes
+    if type(threshold) is not int or threshold < 0:
+        raise ValueError("fun-asr.diarize-max-minutes must be a non-negative integer")
+    for name, url, schemes in (("api-url", settings.fun_asr.api_url, {"http", "https"}),
+                               ("realtime-url", settings.fun_asr.realtime_url, {"ws", "wss"})):
+        parsed = urlparse(url)
+        if parsed.scheme not in schemes or not parsed.netloc:
+            raise ValueError(f"fun-asr.{name} must be a valid URL")
+    if not settings.fun_asr.model.startswith("fun-asr") or "flash" in settings.fun_asr.model or "realtime" in settings.fun_asr.model:
+        raise ValueError("fun-asr.model must select a batch Fun-ASR model; Flash is unsupported")
+    if not settings.fun_asr.realtime_model.startswith("fun-asr-realtime"):
+        raise ValueError("fun-asr.realtime-model must select Fun-ASR realtime")
     num_speakers = settings.elevenlabs.num_speakers
     if num_speakers is not None and not 1 <= num_speakers <= 32:
         raise ValueError(

@@ -145,6 +145,8 @@ Choose with `transcription.backend` (or `--transcription-backend`):
 | `whisper-server` | A whisper.cpp server — local, or an already-running one via `whisper.server-url` | `whisper-server`, or a reachable server |
 | `elevenlabs` | ElevenLabs Scribe batch API, with speaker diarization | `yakiflow[elevenlabs]`, an API key |
 | `elevenlabs-stream` | ElevenLabs Scribe realtime API over WebSocket | `yakiflow[elevenlabs]`, an API key |
+| `fun-asr` | Fun-ASR asynchronous file HTTP API | `yakiflow[fun-asr]`, API key |
+| `fun-asr-stream` | DashScope Recognition realtime SDK (WebSocket) | `yakiflow[fun-asr]`, API key |
 
 Normal runs use `transcription.backend`; live capture uses `transcription.stream-backend`. For
 live streams, `whisper-server` and `elevenlabs-stream` give the fastest live
@@ -613,3 +615,39 @@ before clearing live words, translations and agent coverage.
 Settings schema 3 rejects the old `[stream]` table and does not migrate old
 work directories; finish those with the version that created them. Whisper
 chunk/context settings now live in `[whisper]` and only affect Whisper capture.
+
+### Fun-ASR
+
+```toml
+[transcription]
+backend = "fun-asr"       # auto stream-backend: fun-asr-stream
+
+[fun-asr]
+model = "fun-asr"
+realtime-model = "fun-asr-realtime"
+api-url = "https://dashscope.aliyuncs.com/api/v1"
+realtime-url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+diarize-max-minutes = 120
+# api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
+```
+
+Install `yakiflow[fun-asr]`. Keys resolve from CLI, `DASHSCOPE_API_KEY`,
+configuration, then `yakiflow secret set fun-asr` (requires `[keyring]`). Doctor
+checks the HTTP dependency for batch, and DashScope for realtime.
+Batch uses [temporary OSS upload](https://help.aliyun.com/en/model-studio/get-temporary-file-url)
+through HTTP, followed by asynchronous submission, polling and result download.
+Upload metadata, task ID and raw responses are saved in the work directory;
+resume polls the existing task and reuses downloaded results. Expired links or
+failed tasks report an error without silently submitting another paid task.
+Uploads must fit the returned policy and 1 GB temporary-storage limit; models
+support recordings up to 12 hours. Files are never split automatically. Flash
+models are unsupported. API URLs can use your workspace's regional domain.
+
+Batch diarization is enabled only when the complete recording is **strictly
+shorter** than `diarize-max-minutes`; `0` disables it. The default 120 follows
+[the provider's recommendation](https://help.aliyun.com/zh/model-studio/fun-asr-recorded-speech-recognition-http-api).
+The actual decision is persisted for translation, subtitles, review and resume.
+Realtime does not diarize; intermediate sentences are previews, final sentences
+are durable, and stopping waits for the SDK's last results. Batch words share
+the word segmentation pipeline; realtime uses segment timestamps. Both default
+to no additional alignment. Credentials are never printed by doctor.

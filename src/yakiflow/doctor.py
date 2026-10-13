@@ -160,6 +160,15 @@ def run_doctor(
         # Only where the key would come from is reported, never the key.
         source = elevenlabs_api_key_source(settings)
         checks.append(Check("elevenlabs API key", source != "not set", source))
+    if backend.startswith("fun-asr"):
+        from .cloud import api_key_source
+        modules = ("dashscope",) if backend.endswith("-stream") else ("httpx",)
+        for module in modules:
+            installed = importlib.util.find_spec(module) is not None
+            checks.append(Check(f"fun-asr {module}", installed,
+                                "installed" if installed else "install yakiflow[fun-asr]"))
+        source = api_key_source(settings, "fun-asr", "DASHSCOPE_API_KEY")
+        checks.append(Check("fun-asr API key", source != "not set", source))
     if settings.alignment.backend == "whisperx":
         whisperx_installed = importlib.util.find_spec("whisperx") is not None
         checks.append(

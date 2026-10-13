@@ -682,3 +682,19 @@ def test_f2_agent_inspector_shows_conversation_and_tool_calls(tmp_path) -> None:
         job.db.close()
 
     asyncio.run(exercise())
+
+
+def test_stream_completion_dialog_disables_review_without_results():
+    from textual.widgets import Button
+    from yakiflow.tui import StreamCompletionDialog
+    class DialogApp(App):
+        def on_mount(self):
+            self.push_screen(StreamCompletionDialog(False))
+    async def exercise():
+        app = DialogApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.query_one("#review", Button).disabled
+            assert not app.screen.query_one("#retranscribe", Button).disabled
+            assert not app.screen.query_one("#exit", Button).disabled
+    asyncio.run(exercise())

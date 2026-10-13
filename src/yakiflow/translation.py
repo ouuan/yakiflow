@@ -722,6 +722,11 @@ class TranslationPipeline:
         self._dispatched_word_ranges: set[tuple[int, int]] = set()
         self._settlement: WordSettlement | None = None
 
+    @property
+    def diarization_enabled(self) -> bool:
+        state = self.db.get_checkpoint("diarization_state")
+        return bool(state["enabled"]) if state is not None else self.settings.diarization_enabled
+
     async def _emit_agent(
         self,
         operation_id: str,

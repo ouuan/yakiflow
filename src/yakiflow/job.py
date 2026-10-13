@@ -65,6 +65,7 @@ from .transcription import (
     make_transcriber,
     needs_local_whisper,
     normalize_source_language,
+    word_level_backend,
 )
 from .translation import AgentBackend, TranslationPipeline, make_backend
 
@@ -288,6 +289,9 @@ class YakiFlowJob:
         self._stream_media_path: Path | None = None
         self._partial_write_lock = asyncio.Lock()
         self._word_timeline: WordTimelineView | None = None
+        state = self.db.get_checkpoint("diarization_state")
+        if state is not None:
+            self.settings = replace(self.settings, actual_diarization=bool(state["enabled"]))
 
     def _staged_context_files(self) -> tuple[Path, ...]:
         context_dir = self.work_dir / "context"
@@ -325,12 +329,13 @@ class YakiFlowJob:
     @property
     def _word_mode(self) -> bool:
         """Whether the backend delivers words and the draft agent cuts cues."""
-        return self.settings.transcription.backend.startswith("elevenlabs")
+        return word_level_backend(self.settings.transcription.backend)
 
     @property
     def diarization_enabled(self) -> bool:
         """Whether cues can carry speakers."""
-        return self.settings.diarization_enabled
+        state = self.db.get_checkpoint("diarization_state")
+        return bool(state["enabled"]) if state is not None else self.settings.diarization_enabled
 
     @property
     def media_path(self) -> Path | None:
@@ -665,6 +670,9 @@ class YakiFlowJob:
                 return self.outputs
             if self.settings.stream and self.db.get_checkpoint("stream_completion_choice") != "retranscribe":
                 self._select_settings(self._batch_settings.for_stream())
+            state = self.db.get_checkpoint("diarization_state")
+            if state is not None:
+                self.settings = replace(self.settings, actual_diarization=bool(state["enabled"]))
             self._configure_progress()
             await self._ensure_model()
             artifact = await self._media_stage()
@@ -672,6 +680,9 @@ class YakiFlowJob:
             if self._batch_settings.stream:
                 await self._complete_stream(artifact)
             cues = await self._transcription_stage(artifact)
+            state = self.db.get_checkpoint("diarization_state")
+            if state is not None:
+                self.settings = replace(self.settings, actual_diarization=bool(state["enabled"]))
             if not self.db.get_checkpoint("alignment_complete", False):
                 cues = await self._translation_stage(artifact, cues)
             cues = await self._alignment_stage(artifact, cues)
@@ -698,7 +709,8 @@ class YakiFlowJob:
             raise
 
     def _select_settings(self, settings: Settings) -> None:
-        self.settings = settings
+        state = self.db.get_checkpoint("diarization_state")
+        self.settings = replace(settings, actual_diarization=bool(state["enabled"]) if state else None)
         self.backend = self._injected_backend or make_backend(
             settings.agent.draft.backend or "", self.work_dir, self.runner,
             options=settings.agent.draft.extra_options or (),

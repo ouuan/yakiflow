@@ -139,6 +139,8 @@ yakiflow run video.mp4 \
 | `whisper-server` | whisper.cpp 服务器——本地启动，或通过 `whisper.server-url` 连接已运行的实例 | `whisper-server`，或可访问的服务器 |
 | `elevenlabs` | ElevenLabs Scribe 批量 API，支持说话人识别 | `yakiflow[elevenlabs]` 和 API key |
 | `elevenlabs-stream` | ElevenLabs Scribe 实时 WebSocket API | `yakiflow[elevenlabs]` 和 API key |
+| `fun-asr` | Fun-ASR asynchronous file HTTP API | `yakiflow[fun-asr]`, API key |
+| `fun-asr-stream` | DashScope Recognition realtime SDK (WebSocket) | `yakiflow[fun-asr]`, API key |
 
 四种后端都同时适用于普通任务和 `--stream` 直播采集。处理直播时，
 `whisper-server` 和 `elevenlabs-stream` 的实时预览最快；`whisper-cli` 也可用，
@@ -562,3 +564,31 @@ uv run --extra dev pytest
 重转录使用 `transcription.backend`、`agent.draft` 与正常 alignment，资源检查
 通过后清除实时词、翻译和覆盖状态。resume 恢复已选流程或再次询问；无 TTY
 时自动重转录。配置 schema 3 拒绝旧 `[stream]`，不迁移旧工作目录。
+
+### Fun-ASR
+
+```toml
+[transcription]
+backend = "fun-asr"       # auto stream-backend: fun-asr-stream
+
+[fun-asr]
+model = "fun-asr"
+realtime-model = "fun-asr-realtime"
+api-url = "https://dashscope.aliyuncs.com/api/v1"
+realtime-url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+diarize-max-minutes = 120
+# api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
+```
+
+安装 `yakiflow[fun-asr]`。凭据优先级为 CLI、`DASHSCOPE_API_KEY`、配置、
+`yakiflow secret set fun-asr`（需 `[keyring]`）。非实时通过 HTTP 上传到百炼
+临时 OSS，再提交、轮询并下载；持久化上传信息、任务 ID 和原始结果，恢复时
+继续已有任务。链接过期及任务/子任务失败会明确报错，不自动重复提交付费任务。
+上传受 1 GB 临时存储限制及上传 policy 限制，模型最长 12 小时，不自动拆分；
+Flash 不支持。API 地址可配置业务空间域名。
+
+完整录音严格短于 `diarize-max-minutes` 才开启说话人分离；`0` 关闭，默认 120
+来自[官方两小时建议](https://help.aliyun.com/zh/model-studio/fun-asr-recorded-speech-recognition-http-api)。
+实际状态持久化，字幕、翻译、review 和 resume 一致。实时不支持说话人分离，
+使用官方 DashScope SDK（WebSocket），临时句仅预览，最终句持久化；停止等待
+最后结果。非实时使用词级流程，实时使用片段时间；默认不额外 alignment。
