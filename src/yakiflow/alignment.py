@@ -1571,12 +1571,19 @@ class WhisperXAlignmentBackend(AlignmentBackend):
         from .process import CommandRunner
 
         if import_module is not _ORIGINAL_IMPORT_MODULE:
-            return await _WhisperXInProcessBackend(
+            # Keep the in-process compatibility path used by callers that
+            # replace the lazy importer (most notably tests), while allowing
+            # them to override the NLTK downloader on the public backend.
+            # The actual worker path below never imports WhisperX in the
+            # parent process.
+            in_process = _WhisperXInProcessBackend(
                 language=self.language,
                 device=self.device,
                 model_name=self.model_name,
                 vad_backend=self.vad_backend,
-            ).align(
+            )
+            in_process._download_nltk_punkt = self._download_nltk_punkt  # type: ignore[method-assign]
+            return await in_process.align(
                 audio, original, vad_intervals=vad_intervals,
                 on_warning=on_warning, on_progress=on_progress,
                 on_model_failure=on_model_failure,
@@ -1651,6 +1658,15 @@ class WhisperXAlignmentBackend(AlignmentBackend):
                 result_event.get("warning"),
                 list(result_event.get("low_confidence_ids", [])),
             )
+
+    async def _download_nltk_punkt(self) -> Path:
+        """Download NLTK data for the in-process compatibility path.
+
+        WhisperX normally runs in a child process, but the lazy-import path
+        is retained for injected/fake modules. Exposing the hook here keeps
+        that path configurable in the same way as the original backend.
+        """
+        return await _WhisperXInProcessBackend._download_nltk_punkt()
 
     async def _fallback(
         self,
