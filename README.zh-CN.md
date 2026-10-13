@@ -114,7 +114,7 @@ YakiFlow 会显示转录和翻译进度。在交互式终端中，随后会打�
 | `--profile` | 选择一个 `[profiles.NAME]` 配置组 |
 
 其余所有设置都通过可重复的 `-c KEY=VALUE` 选项修改，`KEY` 是该设置的点号
-TOML 键：
+TOML 键。所有键见[完整配置参考](#完整配置参考)：
 
 ```console
 yakiflow run video.mp4 \
@@ -394,6 +394,173 @@ yt-dlp-options = ["--cookies-from-browser", "chrome"]
 
 Agent 的额外参数同样可通过 `agent.extra-options` 或各阶段的 `extra-options`
 设置。完整命令行帮助见 `yakiflow run --help`。
+
+### 完整配置参考
+
+以下表格列出了所有用户可配置选项。`-c` 使用完整点分键；配置文件中可把点后面的
+键写在相应 TOML 表中，例如 `whisper.vad = false` 等价于 `[whisper]` 下的
+`vad = false`。文档使用连字符命名，也接受下划线；未知键会报错。
+省略选项时使用默认值；“未设置”表示省略该键，TOML 不支持 null。
+配置文件中的字符串需加引号，布尔值写作 `true`/`false`，额外参数使用字符串数组。
+路径支持 `~`，相对路径相对于启动 YakiFlow 的目录解析。
+
+#### 通用设置
+
+| 键 | 默认值 | 含义 / 可选值 |
+| --- | --- | --- |
+| `source-language` | 未设置；必填 | 源语言代码，或 `auto` 自动检测。 |
+| `target-language` | 未设置；必填 | 翻译目标语言或区域，如 `en`、`zh-CN`。 |
+| `output-mode` | `"bilingual"` | `source`、`translated`、`bilingual` 或 `all`；见[字幕形式](#选择字幕形式)。 |
+| `download-dir` | 未设置 | 在此目录保留 URL 下载的媒体；省略时下载到任务工作目录。 |
+| `output-dir` | 未设置 | 最终字幕目录。默认写在本地媒体或保留的下载媒体旁；临时下载则写在当前目录。 |
+| `memory` | 用户配置目录中的 `memory.md` | 共享翻译记忆；Linux 上通常为 `~/.config/yakiflow/memory.md`。 |
+| `context-files` | `[]` | 审校参考文件路径数组；文件会复制到任务中。 |
+| `work-dir` | 临时目录 | 保存任务状态和中间文件。新任务显式指定的目录必须为空，成功后保留。 |
+| `keep-workdir` | `false` | 成功后保留自动创建的工作目录；中断和失败的任务会保留以供续跑。 |
+| `stream` | `false` | 将 URL 作为直播流处理；采集时使用 `transcription.stream-backend` 和 `agent.stream`。 |
+
+#### 转录与 Whisper
+
+| 键 | 默认值 | 含义 / 可选值 |
+| --- | --- | --- |
+| `transcription.backend` | `"whisper-cli"` | `whisper-cli`、`whisper-server`、`elevenlabs`、`elevenlabs-stream`、`fun-asr`、`fun-asr-stream`、`mai` 或 `mai-stream`。 |
+| `transcription.stream-backend` | 根据 `transcription.backend` 推导 | Whisper 后端默认使用 `whisper-server`；云端后端默认使用对应的 `-stream` 后端。可选 `whisper-cli`、`whisper-server`、`elevenlabs-stream`、`fun-asr-stream`、`mai-stream`。 |
+| `whisper.model` | 用户缓存目录中的 `models/ggml-large-v3-turbo-q5_0.bin` | Whisper 模型路径；Linux 上通常为 `~/.cache/yakiflow/models/ggml-large-v3-turbo-q5_0.bin`。 |
+| `whisper.vad` | `true` | 提供 `whisper.vad-model` 时启用 Whisper VAD。 |
+| `whisper.vad-model` | 未设置 | Silero VAD 模型路径；没有模型时 Whisper VAD 关闭。 |
+| `whisper.cli` | `"whisper-cli"` | Whisper CLI 可执行文件名称或路径。 |
+| `whisper.server` | `"whisper-server"` | 启动本地 Whisper 服务时使用的可执行文件名称或路径。 |
+| `whisper.server-url` | 未设置 | 已有服务的 HTTP(S) 推理 URL，包含接口路径；省略时启动本地服务。 |
+| `whisper.stream-chunk-seconds` | `15` | 每个 Whisper 直播分块的新音频秒数；正整数。 |
+| `whisper.stream-context-seconds` | `5` | Whisper 直播分块包含的前文音频秒数；非负整数。 |
+
+#### 云端凭据
+
+每个云端服务支持以下三种键。同一配置层中，每个服务最多选择一种形式；高优先级
+配置层会整体替换低优先级的凭据选择。解析优先级为命令行 `-c`、环境变量、
+配置文件、系统钥匙串；见[管理 API key](#管理-api-key)。
+
+| 键 | 默认值 | 含义 |
+| --- | --- | --- |
+| `elevenlabs.api-key`、`fun-asr.api-key`、`mai.api-key` | 未设置 | API key 字符串。 |
+| `elevenlabs.api-key-file`、`fun-asr.api-key-file`、`mai.api-key-file` | 未设置 | 包含 key 的 UTF-8 文件路径。 |
+| `elevenlabs.api-key-command`、`fun-asr.api-key-command`、`mai.api-key-command` | 未设置 | 从指定命令的标准输出读取 key。 |
+
+对应环境变量为 `ELEVENLABS_API_KEY`、`DASHSCOPE_API_KEY`、`SPEECH_KEY`。
+未设置 `mai.region` 时还会读取 `SPEECH_REGION`。
+
+#### ElevenLabs
+
+| 键 | 默认值 | 含义 / 可选值 |
+| --- | --- | --- |
+| `elevenlabs.model` | `"scribe_v2"` | 文件转录模型 ID。 |
+| `elevenlabs.realtime-model` | `"scribe_v2_realtime"` | 实时转录模型 ID。 |
+| `elevenlabs.diarize` | `true` | 文件转录时识别说话人。 |
+| `elevenlabs.num-speakers` | 未设置 | 预期说话人数，1 至 32 的整数；省略时自动估计。 |
+| `elevenlabs.use-speaker-library` | `true` | 在识别说话人的文件转录中使用服务的说话人库。 |
+| `elevenlabs.max-minutes` | `600` | 单次文件转录请求的最大分钟数；正数。 |
+| `elevenlabs.chunk-overlap-seconds` | `30` | 文件转录分块之间的重叠秒数；非负且小于有效分块长度。 |
+
+#### Fun-ASR
+
+| 键 | 默认值 | 含义 / 可选值 |
+| --- | --- | --- |
+| `fun-asr.model` | `"fun-asr"` | 批量 Fun-ASR 模型 ID；此处不接受 Flash 或实时模型。 |
+| `fun-asr.realtime-model` | `"fun-asr-realtime"` | 以 `fun-asr-realtime` 开头的实时模型 ID。 |
+| `fun-asr.api-url` | `"https://dashscope.aliyuncs.com/api/v1"` | 文件转录的 HTTP(S) API 基础 URL。 |
+| `fun-asr.realtime-url` | `"wss://dashscope.aliyuncs.com/api-ws/v1/inference"` | WebSocket（`ws`/`wss`）推理 URL。 |
+| `fun-asr.diarize-max-minutes` | `120` | 非负整数分钟数；录音短于此时长时识别说话人，`0` 禁用识别。 |
+| `fun-asr.diarize-over-limit` | `"disable"` | 录音达到或超过阈值时，`disable` 禁用说话人识别，或 `split` 拆分成识别说话人的分块。 |
+| `fun-asr.max-minutes` | `720` | 单次文件转录请求的最大分钟数；正数。 |
+| `fun-asr.chunk-overlap-seconds` | `30` | 文件转录分块之间的重叠秒数；非负且小于有效分块长度。 |
+
+#### MAI
+
+| 键 | 默认值 | 含义 / 可选值 |
+| --- | --- | --- |
+| `mai.region` | `SPEECH_REGION`，否则未设置 | Azure 区域标识。实时转录必填；文件转录可用 `mai.endpoint` 代替。 |
+| `mai.endpoint` | 根据区域推导 | HTTP(S) 资源终结点或完整文件转录 URL；仅用于文件转录。 |
+| `mai.model` | `"MAI-Transcribe-2"` | 文件转录模型 ID。 |
+| `mai.realtime-model` | `"MAI-Transcribe-2-Streaming"` | 实时转录模型 ID。 |
+| `mai.diarize-max-minutes` | `15` | 非负整数分钟数；录音短于此时长时识别说话人，`0` 禁用识别。 |
+| `mai.diarize-over-limit` | `"disable"` | 录音达到或超过阈值时，`disable` 禁用说话人识别，或 `split` 拆分成识别说话人的分块。 |
+| `mai.max-minutes` | `120` | 单次文件转录请求的最大分钟数；正数。 |
+| `mai.chunk-overlap-seconds` | `30` | 文件转录分块之间的重叠秒数；非负且小于有效分块长度。 |
+
+所有云端服务都可能因文件大小限制而提前拆分。说话人识别设置仅用于文件转录，
+实时后端不识别说话人。使用 `split` 时，不同分块中的说话人标签可能不同。
+
+#### 对齐与字幕
+
+| 键 | 默认值 | 含义 / 可选值 |
+| --- | --- | --- |
+| `alignment.backend` | Whisper 为 `"vad"`，云端为 `"none"` | `vad`、`whisperx` 或 `none`；`vad` 需要 Whisper。直播采集期间始终为 `none`。 |
+| `alignment.device` | `"auto"` | WhisperX 设备：`auto`、`cpu` 或 `cuda`。 |
+| `alignment.model` | 未设置 | WhisperX 对齐模型名称；省略时根据检测到的源语言选择。 |
+| `subtitles.max-cue-seconds` | `8.0` | 分段时每条字幕的最大秒数；正数。 |
+| `subtitles.max-cue-chars` | `84` | 分段时每条字幕的字符数限制；至少为 8 的整数。按词分段时分别限制原文和译文，CJK 等宽字符按两个字符计。 |
+
+按词分段时，若时长或字符数中一项小于其限制的一半，另一项可以超过限制。
+
+#### Agent
+
+以下四个键均可用于 `[agent]`、`[agent.draft]`、`[agent.final]`、
+`[agent.stream]`。例如 `agent.backend` 设置共享后端，
+`agent.final.backend` 仅覆盖审校后端。
+
+| 表内的键 | 默认值 / 继承规则 | 含义 / 可选值 |
+| --- | --- | --- |
+| `backend` | `[agent]` 未设置；draft 和 final 继承它 | `codex` 或 `claude`。draft 和 final 均必填，可共享设置或按阶段指定。 |
+| `model` | `[agent]` 未设置；draft 和 final 继承它，再使用下表中的阶段默认值 | Agent 模型名称。 |
+| `effort` | `[agent]` 未设置；draft 和 final 继承它，再使用下表中的阶段默认值 | `minimal`、`low`、`medium`、`high` 或 `xhigh`。 |
+| `extra-options` | `[agent]` 未设置；draft 和 final 继承它，否则为 `[]` | Agent CLI 额外参数的字符串数组；显式设置 `[]` 清除继承的参数。 |
+
+| 阶段 | 默认 Codex 模型 | 默认 Claude 模型 | 默认 effort |
+| --- | --- | --- | --- |
+| `agent.draft` | `gpt-5.6-terra` | `sonnet` | `low` |
+| `agent.final` | `gpt-5.6-sol` | `opus` | `high` |
+
+`[agent.stream]` 所有未设置的选项均继承解析后的 `[agent.draft]` 值，
+包括下面的调优选项。stream 显式切换后端却没有指定模型时，使用新后端的
+draft 默认模型。这些是 YakiFlow 内置的模型名称；可用 `model` 指定账户可用模型。
+
+以下键仅用于 `[agent.draft]` 和 `[agent.stream]`，例如 `agent.draft.workers`
+或 `agent.stream.workers`；不能放在 `[agent]` 或 `[agent.final]` 中。
+表中的默认值用于 draft，stream 未覆盖时继承 draft。
+
+| 表内的键 | Draft 默认值 | 含义 / 可选值 |
+| --- | --- | --- |
+| `workers` | `4` | 草稿 Agent 调用的最大并发数；正整数。 |
+| `batch-size` | `20` | 基于字幕条目的转录每批翻译的条数；正整数。 |
+| `preceding-context` | `10` | 作为上下文提供的前文字幕条数；非负整数，也用于按词分批。 |
+| `following-context` | `5` | 按字幕条目分批时提供的后文原文字幕条数；非负整数。 |
+| `word-batch-size` | `400` | 基于词的转录每批分段、翻译的目标词数；至少为 50 的整数。 |
+| `word-following-context` | `40` | 按词分批时提供的后文原文词数；非负整数。 |
+| `timeout-seconds` | `600` | 每次草稿 Agent 尝试的超时秒数；正数。 |
+| `max-attempts` | `3` | 每批最大尝试次数，包含首次尝试；正整数。 |
+| `retry-delay-seconds` | `1` | 失败后重试前的等待秒数；非负数。 |
+
+#### 审校与命令
+
+| 键 | 默认值 | 含义 / 可选值 |
+| --- | --- | --- |
+| `review.display-mode` | `"split"` | `split` 在 tmux 可用时显示字幕窗格；`open` 启动外部查看器；`both` 同时使用两者。 |
+| `review.open-command` | 未设置 | 字幕查看命令；`open` 或 `both` 模式必填。支持 `{subtitle}`（也可用 `{file}`、`{srt}`、`{srt_file}`）、`{workdir}`、`{memory}`（也可用 `{memory_file}`）；省略字幕占位符时追加字幕路径。 |
+| `review.auto-open-video` | `false` | 交互审校开始时打开带字幕的源视频。 |
+| `review.video-open-command` | 下方的 mpv 命令 | 媒体播放命令。支持 `{file}`（也可用 `{media}`）和 `{subtitle}`；省略占位符时追加媒体路径及兼容 mpv 的字幕选项。 |
+| `commands.ffmpeg` | `"ffmpeg"` | ffmpeg 可执行文件名称或路径。 |
+| `commands.ffprobe` | `"ffprobe"` | 用于读取媒体元数据的 ffprobe 可执行文件名称或路径。 |
+| `commands.yt-dlp` | `"yt-dlp"` | 用于 URL 下载的 yt-dlp 可执行文件名称或路径。 |
+| `commands.yt-dlp-options` | `[]` | yt-dlp 额外参数的字符串数组。 |
+
+`review.video-open-command` 默认值为：
+
+```text
+mpv --no-sub-auto --no-resume-playback --sub-file={subtitle} --sid=auto --sub-visibility=yes {file}
+```
+
+字幕查看与媒体播放命令会拆分为参数后直接执行，不经过 shell。路径占位符会自动
+加引号，不支持 shell 管道或重定向。
 
 ### 配置 profile
 

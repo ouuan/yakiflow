@@ -119,7 +119,8 @@ A few high-frequency settings have dedicated options:
 | `--profile` | Select a `[profiles.NAME]` section |
 
 Every other setting is changed with the repeatable `-c KEY=VALUE` option,
-where `KEY` is the setting's dotted TOML key:
+where `KEY` is the setting's dotted TOML key. See the
+[complete configuration reference](#complete-configuration-reference) for all keys:
 
 ```console
 yakiflow run video.mp4 \
@@ -431,6 +432,183 @@ yt-dlp-options = ["--cookies-from-browser", "chrome"]
 
 Agent arguments can likewise be set with `agent.extra-options` or a stage's
 `extra-options`. For the full command-line help, run `yakiflow run --help`.
+
+### Complete configuration reference
+
+The tables below list every user-configurable setting. Use the dotted key with
+`-c`, or put the key after the dot in its TOML table: `whisper.vad = false`
+is equivalent to `vad = false` under `[whisper]`. Hyphenated names are the
+documented spelling; underscores are also accepted. Unknown keys are errors.
+Defaults apply when a setting is omitted; “unset” means omit the key, since
+TOML has no null value. Strings must be quoted in TOML files, booleans use
+`true`/`false`, and argument lists use arrays of strings. Paths expand `~`;
+relative paths use the directory in which you start YakiFlow.
+
+#### General settings
+
+| Key | Default | Meaning / accepted values |
+| --- | --- | --- |
+| `source-language` | Unset; required | Source language code, or `auto` for detection. |
+| `target-language` | Unset; required | Translation language or locale, such as `en` or `zh-CN`. |
+| `output-mode` | `"bilingual"` | `source`, `translated`, `bilingual`, or `all`; see [subtitle formats](#choose-the-subtitle-format). |
+| `download-dir` | Unset | Keep URL downloads in this directory; otherwise download into the job's work directory. |
+| `output-dir` | Unset | Final subtitle directory. By default, write beside local or retained downloaded media; for temporary downloads, use the current directory. |
+| `memory` | User config directory's `memory.md` | Shared translation memory; on Linux, normally `~/.config/yakiflow/memory.md`. |
+| `context-files` | `[]` | Array of reference file paths copied into the job for review. |
+| `work-dir` | Temporary directory | Job state and intermediate files. An explicitly chosen directory must be empty for a new job and is retained after success. |
+| `keep-workdir` | `false` | Retain an automatically created work directory after success; interrupted and failed jobs are preserved for resumption. |
+| `stream` | `false` | Treat a URL as a live stream; use `transcription.stream-backend` and `agent.stream` during capture. |
+
+#### Transcription and Whisper
+
+| Key | Default | Meaning / accepted values |
+| --- | --- | --- |
+| `transcription.backend` | `"whisper-cli"` | `whisper-cli`, `whisper-server`, `elevenlabs`, `elevenlabs-stream`, `fun-asr`, `fun-asr-stream`, `mai`, or `mai-stream`. |
+| `transcription.stream-backend` | Derived from `transcription.backend` | Either Whisper backend defaults to `whisper-server`; cloud backends default to their corresponding `-stream` backend. Accepts `whisper-cli`, `whisper-server`, `elevenlabs-stream`, `fun-asr-stream`, or `mai-stream`. |
+| `whisper.model` | User cache directory's `models/ggml-large-v3-turbo-q5_0.bin` | Whisper model path; on Linux, normally `~/.cache/yakiflow/models/ggml-large-v3-turbo-q5_0.bin`. |
+| `whisper.vad` | `true` | Enable Whisper VAD when `whisper.vad-model` is provided. |
+| `whisper.vad-model` | Unset | Silero VAD model path. Without a model, Whisper VAD is off. |
+| `whisper.cli` | `"whisper-cli"` | Whisper CLI executable name or path. |
+| `whisper.server` | `"whisper-server"` | Whisper server executable name or path, used when starting a local server. |
+| `whisper.server-url` | Unset | Existing server's HTTP(S) inference URL, including its endpoint path; otherwise YakiFlow starts a local server. |
+| `whisper.stream-chunk-seconds` | `15` | Positive integer seconds of new audio per Whisper live chunk. |
+| `whisper.stream-context-seconds` | `5` | Nonnegative integer seconds of preceding audio included in each Whisper live chunk. |
+
+#### Cloud credentials
+
+Each cloud provider supports the following three keys. Choose at most one form
+per provider in each configuration layer; a higher layer replaces the entire
+credential choice. Resolution order is command-line `-c`, environment variable,
+configuration file, then OS keyring; see [API key management](#manage-api-keys).
+
+| Keys | Default | Meaning |
+| --- | --- | --- |
+| `elevenlabs.api-key`, `fun-asr.api-key`, `mai.api-key` | Unset | API key string. |
+| `elevenlabs.api-key-file`, `fun-asr.api-key-file`, `mai.api-key-file` | Unset | Path to a UTF-8 file containing the key. |
+| `elevenlabs.api-key-command`, `fun-asr.api-key-command`, `mai.api-key-command` | Unset | Command whose standard output supplies the key. |
+
+The corresponding environment variables are `ELEVENLABS_API_KEY`,
+`DASHSCOPE_API_KEY`, and `SPEECH_KEY`. `SPEECH_REGION` also supplies `mai.region`
+when that setting is omitted.
+
+#### ElevenLabs
+
+| Key | Default | Meaning / accepted values |
+| --- | --- | --- |
+| `elevenlabs.model` | `"scribe_v2"` | File transcription model ID. |
+| `elevenlabs.realtime-model` | `"scribe_v2_realtime"` | Realtime transcription model ID. |
+| `elevenlabs.diarize` | `true` | Recognize speakers in file transcription. |
+| `elevenlabs.num-speakers` | Unset | Expected speaker count, an integer from 1 to 32; omit for automatic estimation. |
+| `elevenlabs.use-speaker-library` | `true` | Use the service's speaker library during diarized file transcription. |
+| `elevenlabs.max-minutes` | `600` | Positive maximum minutes per file transcription request. |
+| `elevenlabs.chunk-overlap-seconds` | `30` | Nonnegative overlap in seconds between file transcription chunks; must be shorter than the usable chunk length. |
+
+#### Fun-ASR
+
+| Key | Default | Meaning / accepted values |
+| --- | --- | --- |
+| `fun-asr.model` | `"fun-asr"` | Batch Fun-ASR model ID; Flash and realtime models are not accepted here. |
+| `fun-asr.realtime-model` | `"fun-asr-realtime"` | Realtime model ID beginning with `fun-asr-realtime`. |
+| `fun-asr.api-url` | `"https://dashscope.aliyuncs.com/api/v1"` | HTTP(S) API base URL for file transcription. |
+| `fun-asr.realtime-url` | `"wss://dashscope.aliyuncs.com/api-ws/v1/inference"` | WebSocket (`ws`/`wss`) inference URL. |
+| `fun-asr.diarize-max-minutes` | `120` | Nonnegative integer minutes. Recognize speakers below this recording duration; `0` disables recognition. |
+| `fun-asr.diarize-over-limit` | `"disable"` | At or above the duration threshold, `disable` speaker recognition or `split` into diarized chunks. |
+| `fun-asr.max-minutes` | `720` | Positive maximum minutes per file transcription request. |
+| `fun-asr.chunk-overlap-seconds` | `30` | Nonnegative overlap in seconds between file transcription chunks; must be shorter than the usable chunk length. |
+
+#### MAI
+
+| Key | Default | Meaning / accepted values |
+| --- | --- | --- |
+| `mai.region` | `SPEECH_REGION`, otherwise unset | Azure region identifier. Required for realtime transcription, and for file transcription unless `mai.endpoint` is set. |
+| `mai.endpoint` | Derived from region | HTTP(S) resource endpoint or full file transcription URL; applies to file transcription only. |
+| `mai.model` | `"MAI-Transcribe-2"` | File transcription model ID. |
+| `mai.realtime-model` | `"MAI-Transcribe-2-Streaming"` | Realtime transcription model ID. |
+| `mai.diarize-max-minutes` | `15` | Nonnegative integer minutes. Recognize speakers below this recording duration; `0` disables recognition. |
+| `mai.diarize-over-limit` | `"disable"` | At or above the duration threshold, `disable` speaker recognition or `split` into diarized chunks. |
+| `mai.max-minutes` | `120` | Positive maximum minutes per file transcription request. |
+| `mai.chunk-overlap-seconds` | `30` | Nonnegative overlap in seconds between file transcription chunks; must be shorter than the usable chunk length. |
+
+File size limits may cause earlier splitting for any cloud provider. Speaker
+recognition settings apply to file transcription; realtime backends do not
+recognize speakers. With `split`, speaker labels may differ between chunks.
+
+#### Alignment and subtitles
+
+| Key | Default | Meaning / accepted values |
+| --- | --- | --- |
+| `alignment.backend` | `"vad"` for Whisper; `"none"` for cloud backends | `vad`, `whisperx`, or `none`. `vad` requires Whisper. During live capture, alignment is always `none`. |
+| `alignment.device` | `"auto"` | WhisperX device: `auto`, `cpu`, or `cuda`. |
+| `alignment.model` | Unset | WhisperX alignment model name; omit to select a model for the detected source language. |
+| `subtitles.max-cue-seconds` | `8.0` | Positive maximum subtitle cue duration in seconds for segmentation. |
+| `subtitles.max-cue-chars` | `84` | Character limit per segmented cue; integer of at least 8. In word-based segmentation, applies per language, with CJK and other wide characters counting as two. |
+
+For word-based segmentation, either duration or character limit may be exceeded
+when the other measure stays below half its limit.
+
+#### Agents
+
+These four keys are available in each of `[agent]`, `[agent.draft]`,
+`[agent.final]`, and `[agent.stream]`. For example, use `agent.backend` for a
+shared choice or `agent.final.backend` to override review only.
+
+| Key within the table | Default / inheritance | Meaning / accepted values |
+| --- | --- | --- |
+| `backend` | Unset in `[agent]`; draft and final inherit it | `codex` or `claude`. Required for both draft and final, either shared or set per stage. |
+| `model` | Unset in `[agent]`; draft and final inherit it, then use the stage default below | Agent model name. |
+| `effort` | Unset in `[agent]`; draft and final inherit it, then use the stage default below | `minimal`, `low`, `medium`, `high`, or `xhigh`. |
+| `extra-options` | Unset in `[agent]`; draft and final inherit it, otherwise `[]` | Additional Agent CLI arguments as a string array; `[]` explicitly clears inherited arguments. |
+
+| Stage | Default Codex model | Default Claude model | Default effort |
+| --- | --- | --- | --- |
+| `agent.draft` | `gpt-5.6-terra` | `sonnet` | `low` |
+| `agent.final` | `gpt-5.6-sol` | `opus` | `high` |
+
+Every omitted `[agent.stream]` setting inherits the resolved `[agent.draft]`
+value, including the tuning keys below. If stream explicitly switches backend
+without specifying a model, it uses the draft model default for that backend.
+These are YakiFlow's built-in model names; set `model` to a model your account
+can access.
+
+The following keys are available in `[agent.draft]` and `[agent.stream]`, for
+example `agent.draft.workers` or `agent.stream.workers`. They are not accepted
+in `[agent]` or `[agent.final]`. Defaults below are for draft; stream inherits
+draft unless overridden.
+
+| Key within the table | Draft default | Meaning / accepted values |
+| --- | --- | --- |
+| `workers` | `4` | Positive integer maximum concurrent draft Agent calls. |
+| `batch-size` | `20` | Positive integer cues per translation batch for cue-based transcription. |
+| `preceding-context` | `10` | Nonnegative integer preceding cues supplied as context; also used for word-based batches. |
+| `following-context` | `5` | Nonnegative integer following source cues supplied as context for cue-based batches. |
+| `word-batch-size` | `400` | Target words per segmentation/translation batch for word-based transcription; integer of at least 50. |
+| `word-following-context` | `40` | Nonnegative integer following source words supplied as context for word-based batches. |
+| `timeout-seconds` | `600` | Positive timeout in seconds for each draft Agent attempt. |
+| `max-attempts` | `3` | Positive integer maximum attempts per batch, including the first attempt. |
+| `retry-delay-seconds` | `1` | Nonnegative delay in seconds between failed attempts. |
+
+#### Review and commands
+
+| Key | Default | Meaning / accepted values |
+| --- | --- | --- |
+| `review.display-mode` | `"split"` | `split` shows a subtitle pane in tmux when available; `open` launches an external viewer; `both` does both. |
+| `review.open-command` | Unset | Subtitle viewer command; required for `open` or `both`. Supports `{subtitle}` (also `{file}`, `{srt}`, `{srt_file}`), `{workdir}`, and `{memory}` (also `{memory_file}`); appends the subtitle path if its placeholder is omitted. |
+| `review.auto-open-video` | `false` | Open the source video with subtitles when interactive review starts. |
+| `review.video-open-command` | mpv command below | Media player command. Supports `{file}` (also `{media}`) and `{subtitle}`; missing placeholders cause the media path and an mpv-compatible subtitle option to be added. |
+| `commands.ffmpeg` | `"ffmpeg"` | ffmpeg executable name or path. |
+| `commands.ffprobe` | `"ffprobe"` | ffprobe executable name or path for media metadata. |
+| `commands.yt-dlp` | `"yt-dlp"` | yt-dlp executable name or path for URL downloads. |
+| `commands.yt-dlp-options` | `[]` | Extra yt-dlp arguments as a string array. |
+
+The default `review.video-open-command` is:
+
+```text
+mpv --no-sub-auto --no-resume-playback --sub-file={subtitle} --sid=auto --sub-visibility=yes {file}
+```
+
+Review viewer and media player commands are split into arguments and run without
+a shell. Path placeholders are quoted automatically; shell pipes and redirections
+are not supported.
 
 ### Configuration profiles
 
