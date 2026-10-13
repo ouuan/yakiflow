@@ -141,8 +141,11 @@ yakiflow run video.mp4 \
 | `elevenlabs-stream` | ElevenLabs Scribe 实时 WebSocket API | `yakiflow[elevenlabs]` 和 API key |
 | `fun-asr` | Fun-ASR asynchronous file HTTP API | `yakiflow[fun-asr]`, API key |
 | `fun-asr-stream` | DashScope Recognition realtime SDK (WebSocket) | `yakiflow[fun-asr]`, API key |
+| `mai` | MAI-Transcribe REST multipart API | `yakiflow[mai]`, Speech key and region/endpoint |
+| `mai-stream` | MAI-Transcribe Streaming Speech SDK | `yakiflow[mai]`, Speech key and region |
 
-四种后端都同时适用于普通任务和 `--stream` 直播采集。处理直播时，
+普通任务使用 `transcription.backend`，直播采集使用 `transcription.stream-backend`。
+处理直播时，
 `whisper-server` 和 `elevenlabs-stream` 的实时预览最快；`whisper-cli` 也可用，
 但每个片段都要重新加载模型，预览会明显落后于直播。
 
@@ -230,8 +233,8 @@ yakiflow run 'https://example.com/live' \
   --output-dir ./subtitles
 ```
 
-直播字幕是临时的。采集结束后，YakiFlow 会对完整录像重新转录，然后才发布最终
-字幕。在 TUI 中按 `s` 停止采集并把已收到的内容收尾；非 TUI 运行按一次 Ctrl-C。
+采集结束后，可选择复用实时结果进入 review、重新转录完整录像，或退出并保留工作
+目录。在 TUI 中按 `s` 停止采集并把已收到的内容收尾；非 TUI 运行按一次 Ctrl-C。
 直播进行中可以按 `o`，在媒体播放器中打开目前已录到的部分并挂上当前的实时字幕。
 
 播放器只会加载一次字幕文件。要让 mpv 自动跟进实时字幕的更新，把本仓库的
@@ -592,3 +595,34 @@ Flash 不支持。API 地址可配置业务空间域名。
 实际状态持久化，字幕、翻译、review 和 resume 一致。实时不支持说话人分离，
 使用官方 DashScope SDK（WebSocket），临时句仅预览，最终句持久化；停止等待
 最后结果。非实时使用词级流程，实时使用片段时间；默认不额外 alignment。
+
+### MAI
+
+```toml
+[transcription]
+backend = "mai"          # auto stream-backend: mai-stream
+
+[mai]
+# region = "swedencentral" # or SPEECH_REGION
+# endpoint = "https://YourResourceName.cognitiveservices.azure.com"
+model = "MAI-Transcribe-2"
+realtime-model = "MAI-Transcribe-2-Streaming"
+diarize-max-minutes = 15
+# api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
+```
+
+安装 `yakiflow[mai]`（实时需 Speech SDK >= 1.52）。凭据优先级为 CLI、
+`SPEECH_KEY`、配置、`yakiflow secret set mai`（需 `[keyring]`）。region 可通过
+`mai.region` 或 `SPEECH_REGION` 设置；非实时也可用可选 `mai.endpoint`，支持
+资源基础地址或完整转录 URL。实时使用 region 的 universal v2 WebSocket 地址，
+由[官方 Speech SDK](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe-2-streaming-speech-sdk)
+处理。doctor 按当前阶段检查依赖及凭据。
+
+[非实时 REST](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe)
+使用 multipart 和 enhanced mode，请求逐词时间戳。录音必须短于 2 小时、文件
+小于 250 MB，不自动拆分。完整录音严格短于 `diarize-max-minutes` 才开启
+说话人分离，默认 15 是预览版的保守值；达到 15 分钟即关闭，`0` 始终关闭。
+覆盖值必须为非负整数。实际启用状态、原始请求和响应持久化，resume 复用。
+默认不额外 alignment。实时按片段起止时间处理，临时结果仅预览，最终结果
+持久化；关闭 PCM 输入后等待最后结果，线程回调安全进入 asyncio，处理
+取消、NoMatch 和服务错误；实时不开启说话人分离。

@@ -147,6 +147,8 @@ Choose with `transcription.backend` (or `--transcription-backend`):
 | `elevenlabs-stream` | ElevenLabs Scribe realtime API over WebSocket | `yakiflow[elevenlabs]`, an API key |
 | `fun-asr` | Fun-ASR asynchronous file HTTP API | `yakiflow[fun-asr]`, API key |
 | `fun-asr-stream` | DashScope Recognition realtime SDK (WebSocket) | `yakiflow[fun-asr]`, API key |
+| `mai` | MAI-Transcribe REST multipart API | `yakiflow[mai]`, Speech key and region/endpoint |
+| `mai-stream` | MAI-Transcribe Streaming Speech SDK | `yakiflow[mai]`, Speech key and region |
 
 Normal runs use `transcription.backend`; live capture uses `transcription.stream-backend`. For
 live streams, `whisper-server` and `elevenlabs-stream` give the fastest live
@@ -239,8 +241,8 @@ yakiflow run 'https://example.com/live' \
   --output-dir ./subtitles
 ```
 
-Live subtitles are provisional. After capture ends, YakiFlow transcribes the
-complete recording again before publishing the final subtitles. In the TUI,
+After capture ends, choose review using live results, retranscription of the
+complete recording, or exit preserving the work directory. In the TUI,
 press `s` to stop capture and finalize what has been received; press Ctrl-C
 once in a non-TUI run. While the stream is still running, press `o` to open
 the recording so far with the current live subtitles in the media player.
@@ -651,3 +653,39 @@ Realtime does not diarize; intermediate sentences are previews, final sentences
 are durable, and stopping waits for the SDK's last results. Batch words share
 the word segmentation pipeline; realtime uses segment timestamps. Both default
 to no additional alignment. Credentials are never printed by doctor.
+
+### MAI
+
+```toml
+[transcription]
+backend = "mai"          # auto stream-backend: mai-stream
+
+[mai]
+# region = "swedencentral" # or SPEECH_REGION
+# endpoint = "https://YourResourceName.cognitiveservices.azure.com"
+model = "MAI-Transcribe-2"
+realtime-model = "MAI-Transcribe-2-Streaming"
+diarize-max-minutes = 15
+# api-key = "..."         # or api-key-file / api-key-command (mutually exclusive)
+```
+
+Install `yakiflow[mai]` (Speech SDK >= 1.52 for realtime). Credentials use
+CLI overrides, `SPEECH_KEY`, configuration, then `yakiflow secret set mai`
+(requires `[keyring]`). Set `mai.region` or `SPEECH_REGION`; batch can instead
+use a REST `mai.endpoint`, either a resource base URL or the full transcription
+URL. Realtime uses the region's universal v2 WebSocket endpoint through the
+[official Speech SDK](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe-2-streaming-speech-sdk).
+Doctor checks the dependency and credentials for the selected phase.
+
+[Batch REST](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe)
+requests word timestamps with enhanced mode. Recordings must be shorter than
+2 hours and files smaller than 250 MB; files are not automatically split.
+Diarization is enabled only below `mai.diarize-max-minutes`, a conservative
+preview default of 15 minutes; exactly 15 minutes disables it. `0` always
+disables it; overrides must be nonnegative integers. The complete recording's
+actual decision is saved with the raw request and response and reused on resume.
+Both MAI backends default to no additional alignment. Realtime uses segment
+start/duration timestamps, keeps intermediate results as previews, persists
+final segments, and waits for the last results after closing PCM input.
+Cancellation, NoMatch and service errors are handled through the callback
+thread adapter. MAI realtime does not enable diarization.

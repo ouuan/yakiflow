@@ -78,7 +78,7 @@ def _parser() -> argparse.ArgumentParser:
     secret_sub = secret.add_subparsers(dest="secret_command", required=True)
     for verb in ("set", "unset"):
         entry = secret_sub.add_parser(verb)
-        entry.add_argument("name", choices=["elevenlabs", "fun-asr"])
+        entry.add_argument("name", choices=["elevenlabs", "fun-asr", "mai"])
     return parser
 
 
@@ -206,14 +206,18 @@ def _resume_overrides(namespace: argparse.Namespace) -> Mapping[str, Any]:
     return parse_config_items(getattr(namespace, "config_items", []))
 
 
-def _health_check(settings: Settings, input_value: str) -> None:
+def _health_check(settings: Settings, input_value: str, *, reuse_live: bool = False) -> None:
     """Refuse to start a run whose environment cannot carry it through.
 
     Every fatal failure is reported at once, so one startup tells the whole
     story instead of each stage stopping the job on its own missing piece.
     Advisory failures are only warned about and never hold up a run.
     """
-    checks = run_doctor(settings.for_stream() if settings.stream else settings, source_is_url=MediaSource.parse(input_value).is_url)
+    checks = run_doctor(
+        settings.for_stream() if settings.stream else settings,
+        source_is_url=MediaSource.parse(input_value).is_url,
+        **({"transcription_required": False, "alignment_required": False} if reuse_live else {}),
+    )
     for check in advisory_failures(checks):
         print(f"yakiflow: warning: {check.name}: {check.detail}", file=sys.stderr)
     failures = fatal_failures(checks)
@@ -374,9 +378,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             # The stored configuration bypasses argparse, so re-check it here
             # instead of failing deep inside a resumed stage.
-            validate_run_settings(job.settings)
+            reuse_live = bool(job.settings.stream and job.db.artifact("reference_audio"))
+            validate_run_settings(job.settings, check_credentials=not reuse_live)
             if not args.skip_health_check:
-                _health_check(job.settings, job.input_value)
+                _health_check(job.settings, job.input_value, reuse_live=reuse_live)
         else:
             settings = _settings(args)
             validate_run_settings(settings)
@@ -385,13 +390,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # should leave nothing behind to resume or clean up.
                 _health_check(settings, args.input)
             job = YakiFlowJob(args.input, settings, listener=_print_event)
+        job.skip_health_check = args.skip_health_check
         if sys.stdin.isatty() and sys.stdout.isatty():
             from . import tui
 
             succeeded = tui.run(job)
             if not succeeded:
                 _print_preserved(job)
-                return 2
+                return 0 if getattr(job, "stream_exit_requested", False) else 2
             return asyncio.run(_complete_job(job, job.outputs))
         return asyncio.run(_run_job(job))
     except (ValueError, FileNotFoundError, RuntimeError) as exc:

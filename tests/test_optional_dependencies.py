@@ -66,3 +66,16 @@ def test_locked_cpu_torch_has_no_nvidia_runtime_dependencies() -> None:
         dependency["name"].startswith("nvidia-")
         for dependency in cuda_torch["dependencies"]
     )
+
+
+def test_cloud_dependencies_are_optional_and_use_official_sdks():
+    project = Path(__file__).parents[1]
+    with (project / "pyproject.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    extras = config["project"]["optional-dependencies"]
+    assert any(item.startswith("dashscope>=") for item in extras["fun-asr"])
+    assert any(item.startswith("httpx>=") for item in extras["fun-asr"])
+    assert any(item.startswith("azure-cognitiveservices-speech>=1.52") for item in extras["mai"])
+    assert any(item.startswith("httpx>=") for item in extras["mai"])
+    assert all(not item.startswith(("dashscope", "azure-cognitiveservices-speech", "httpx"))
+               for item in config["project"]["dependencies"])

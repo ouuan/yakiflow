@@ -1,4 +1,5 @@
 """Async adapter for SDKs that deliver segment results from callback threads."""
+
 from __future__ import annotations
 
 import asyncio
@@ -39,16 +40,20 @@ class SDKStreamTranscriber(Transcriber):
 
     async def start_chunks(self):
         self.loop = asyncio.get_running_loop()
-        self.db.checkpoint("diarization_state", {"backend": self.name, "enabled": False})
+        self.db.checkpoint(
+            "diarization_state", {"backend": self.name, "enabled": False}
+        )
 
     async def _open(self, start):
         self.base = start
         self.session_number += 1
         # Late callbacks from a retired connection cannot land in its replacement.
         generation = self.session_number
+
         def callback(kind, payload=None):
             if generation == self.session_number:
                 self.enqueue(kind, payload)
+
         self.session = self.session_factory(callback)
         await asyncio.to_thread(self.session.start)
 
@@ -56,21 +61,43 @@ class SDKStreamTranscriber(Transcriber):
         ended = None
         while not self.queue.empty():
             kind, data = self.queue.get_nowait()
-            save_raw(self.work_dir, self.name, f"event-{self.session_number}-{self.queue_event_id}.json",
-                     {"kind": kind, "base": self.base, "data": data})
+            save_raw(
+                self.work_dir,
+                self.name,
+                f"event-{self.session_number}-{self.queue_event_id}.json",
+                {"kind": kind, "base": self.base, "data": data},
+            )
             self.queue_event_id += 1
             if kind in {"final", "partial"} and data and data.get("text"):
-                cue = Cue(str(len(self._final) + 1), self.base + data["start"],
-                          self.base + data["end"], data["text"])
+                cue = Cue(
+                    str(len(self._final) + 1),
+                    self.base + data["start"],
+                    self.base + data["end"],
+                    data["text"],
+                )
                 if kind == "partial":
-                    self._partial = replace(cue, id="sdk-partial")
+                    self._partial = replace(
+                        cue, id="sdk-partial", metadata={"transient": True}
+                    )
                 else:
                     self._partial = None
                     self._final = merge_overlap(self._final, [cue])
-                    self._final = [replace(item, id=str(i + 1)) for i, item in enumerate(self._final)]
-                    self.db.checkpoint(self.name + "_final", [
-                        {"id": item.id, "start": item.start, "end": item.end, "source": item.source}
-                        for item in self._final])
+                    self._final = [
+                        replace(item, id=str(i + 1))
+                        for i, item in enumerate(self._final)
+                    ]
+                    self.db.checkpoint(
+                        self.name + "_final",
+                        [
+                            {
+                                "id": item.id,
+                                "start": item.start,
+                                "end": item.end,
+                                "source": item.source,
+                            }
+                            for item in self._final
+                        ],
+                    )
                     # Retain two seconds of overlap and all uncommitted audio.
                     cut = max(self.buffer_start, min(self.fed_end, cue.end - 2))
                     n = int((cut - self.buffer_start) * 32000)
@@ -89,13 +116,15 @@ class SDKStreamTranscriber(Transcriber):
     async def _recover(self, reason):
         self.reconnects += 1
         if self.reconnects > 3:
-            raise RuntimeError(f"{self.name}: repeated connection failures: {reason}; final results preserved")
+            raise RuntimeError(
+                f"{self.name}: repeated connection failures: {reason}; final results preserved"
+            )
         await self._warn(f"{self.name}: reconnecting after {reason}")
         if self.session is not None:
             try:
                 await asyncio.wait_for(asyncio.to_thread(self.session.stop), 30)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.db.log(self.name, "stderr", f"retired session stop failed: {exc}")
             self._drain()
         self.session_number += 1
         self._partial = None
@@ -104,12 +133,16 @@ class SDKStreamTranscriber(Transcriber):
 
     async def _send(self, pcm):
         for offset in range(0, len(pcm), 3200):
-            await asyncio.to_thread(self.session.send, pcm[offset:offset + 3200])
+            await asyncio.to_thread(self.session.send, pcm[offset : offset + 3200])
             await asyncio.sleep(0.1)
 
     async def submit_chunk(self, wav: Path, offset: float):
         with wave.open(str(wav), "rb") as audio:
-            if (audio.getframerate(), audio.getsampwidth(), audio.getnchannels()) != (16000, 2, 1):
+            if (audio.getframerate(), audio.getsampwidth(), audio.getnchannels()) != (
+                16000,
+                2,
+                1,
+            ):
                 raise ValueError(f"{self.name} requires mono 16 kHz 16-bit PCM")
             pcm = audio.readframes(audio.getnframes())
         previous = {(cue.start, cue.end, cue.source) for cue in self._final}
@@ -133,7 +166,11 @@ class SDKStreamTranscriber(Transcriber):
         if failure:
             await self._recover(failure)
         # Intermediate speech is a UI preview only. It is never persisted as a cue.
-        result = [cue for cue in self._final if (cue.start, cue.end, cue.source) not in previous]
+        result = [
+            cue
+            for cue in self._final
+            if (cue.start, cue.end, cue.source) not in previous
+        ]
         if self._partial:
             result.append(self._partial)
         return result
@@ -142,24 +179,38 @@ class SDKStreamTranscriber(Transcriber):
         if self.session is None:
             return
         try:
-            await asyncio.wait_for(asyncio.to_thread(self.session.stop), 60)
+            error = None
+            try:
+                await asyncio.wait_for(asyncio.to_thread(self.session.stop), 60)
+            except Exception as exc:
+                error = exc
             await asyncio.sleep(0)  # land callback-thread handoffs queued by stop
             failure = self._drain()
+            if error is not None:
+                raise error
             if failure and failure != "closed":
                 raise RuntimeError(f"{self.name} stopped with service error: {failure}")
         finally:
             self.session_number += 1
             self.session = None
 
-    async def transcribe(self, audio, on_event=None, on_progress=None, *, resume_from=()):
-        self._final = [Cue(**item) for item in self.db.get_checkpoint(self.name + "_final", [])]
+    async def transcribe(
+        self, audio, on_event=None, on_progress=None, *, resume_from=()
+    ):
+        self._final = [
+            Cue(**item) for item in self.db.get_checkpoint(self.name + "_final", [])
+        ]
         await self.start_chunks()
         start = max(0.0, max((cue.end for cue in self._final), default=0) - 2)
         self.fed_end = self.buffer_start = start
         await self._open(start)
         try:
             with wave.open(str(audio), "rb") as wav:
-                if (wav.getframerate(), wav.getsampwidth(), wav.getnchannels()) != (16000, 2, 1):
+                if (wav.getframerate(), wav.getsampwidth(), wav.getnchannels()) != (
+                    16000,
+                    2,
+                    1,
+                ):
                     raise ValueError(f"{self.name} requires mono 16 kHz 16-bit PCM")
                 wav.setpos(min(wav.getnframes(), int(start * 16000)))
                 total = wav.getnframes() / 16000

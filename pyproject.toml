@@ -21,6 +21,7 @@ elevenlabs = [
   # The SDK's realtime speech-to-text client imports websockets on demand.
   "websockets>=13",
 ]
+mai = ["httpx>=0.27", "azure-cognitiveservices-speech>=1.52,<2"]
 fun-asr = ["httpx>=0.27", "dashscope>=1.23.1,<2"]
 keyring = ["keyring>=25"]
 socks = ["httpx[socks]"]

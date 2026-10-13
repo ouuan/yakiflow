@@ -821,7 +821,7 @@ class WhisperServerTranscriber(Transcriber):
 
 
 def word_level_backend(backend: str) -> bool:
-    return backend in {"elevenlabs", "elevenlabs-stream", "fun-asr"}
+    return backend in {"elevenlabs", "elevenlabs-stream", "fun-asr", "mai"}
 
 
 def make_transcriber(
@@ -847,5 +847,9 @@ def make_transcriber(
     if backend in {"fun-asr", "fun-asr-stream"}:
         from .fun_asr import FunASRTranscriber, FunASRRealtimeTranscriber
         cls = FunASRTranscriber if backend == "fun-asr" else FunASRRealtimeTranscriber
+        return cls(settings, work_dir, db, runner)
+    if backend in {"mai", "mai-stream"}:
+        from .mai import MAITranscriber, MAIRealtimeTranscriber
+        cls = MAITranscriber if backend == "mai" else MAIRealtimeTranscriber
         return cls(settings, work_dir, db, runner)
     raise ValueError(f"unsupported transcription backend: {backend}")

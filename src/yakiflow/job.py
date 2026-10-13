@@ -217,6 +217,8 @@ class YakiFlowJob:
         self.settings = settings
         self.stream_completion_listener = None
         self._injected_backend = backend
+        self.skip_health_check = False
+        self.stream_exit_requested = False
         self.context_files = (
             self._staged_context_files()
             if _resume
@@ -292,6 +294,9 @@ class YakiFlowJob:
         state = self.db.get_checkpoint("diarization_state")
         if state is not None:
             self.settings = replace(self.settings, actual_diarization=bool(state["enabled"]))
+        if _resume and settings.stream and self.db.artifact("reference_audio"):
+            choice = self.db.get_checkpoint("stream_completion_choice")
+            self._select_settings(replace(settings, stream=False) if choice == "retranscribe" else settings.for_stream())
 
     def _staged_context_files(self) -> tuple[Path, ...]:
         context_dir = self.work_dir / "context"
@@ -674,7 +679,8 @@ class YakiFlowJob:
             if state is not None:
                 self.settings = replace(self.settings, actual_diarization=bool(state["enabled"]))
             self._configure_progress()
-            await self._ensure_model()
+            if not (self._batch_settings.stream and self.db.artifact("reference_audio")):
+                await self._ensure_model()
             artifact = await self._media_stage()
             self._artifact = artifact
             if self._batch_settings.stream:
@@ -723,6 +729,8 @@ class YakiFlowJob:
             choice = (await self.stream_completion_listener(available)
                       if self.stream_completion_listener else "retranscribe")
             if choice == "exit":
+                self.db.checkpoint("stream_completion_last_choice", "exit")
+                self.stream_exit_requested = True
                 raise StreamExit
             if choice not in {"review", "retranscribe"} or (choice == "review" and not available):
                 raise ValueError("invalid stream completion choice")
@@ -731,7 +739,7 @@ class YakiFlowJob:
                 from .doctor import fatal_failures, run_doctor
                 batch = replace(self._batch_settings, stream=False)
                 validate_run_settings(batch)
-                failures = fatal_failures(await asyncio.to_thread(
+                failures = [] if self.skip_health_check else fatal_failures(await asyncio.to_thread(
                     run_doctor, batch, source_is_url=False
                 ))
                 if failures:
@@ -919,8 +927,8 @@ class YakiFlowJob:
                     self.db.replace_transcript(transcriber.chunk_cues)
                     timeline = self.db.list_cues(stable_only=True)
                 await self._write_partial(partial_path, timeline)
-                for cue in new_cues:
-                    await self.emit("transcript", "live subtitle", cue=cue)
+                if not self._word_mode:
+                    await self.emit("timeline-replaced", "live timeline updated", cues=timeline)
                 # An Agent round trip runs an order of magnitude longer than
                 # the transcriber call above. Awaiting it here would leave the
                 # transcriber idle until it returned, so let the next chunk
@@ -939,6 +947,8 @@ class YakiFlowJob:
                         asyncio.create_task(translate_live(batch, context, following))
                     )
                 await self.emit("stream", f"updated {partial_path}")
+            for cue in new_cues:
+                await self.emit("transcript", "live subtitle", cue=cue)
             completed_chunks += 1
             progress_key = int(start) // 15
             if progress_key != last_progress_key:
@@ -956,21 +966,27 @@ class YakiFlowJob:
             )
             stream_succeeded = True
         finally:
-            await transcriber.close_chunks()
-            if translation_tasks:
-                if not stream_succeeded:
-                    for task in translation_tasks:
-                        task.cancel()
-                # On success, let the outstanding previews land so the partial
-                # file on disk matches the transcript the stream ended with.
-                await asyncio.gather(*translation_tasks, return_exceptions=True)
-        if self._word_mode:
-            self.db.delete_cues([cue.id for cue in self.db.list_cues() if is_preview_cue_id(cue.id)])
-            self.db.upsert_cues(transcriber.chunk_cues, stable=False)
-            self._word_timeline = None
-        else:
-            self.db.replace_transcript(transcriber.chunk_cues)
-        await self._write_partial(partial_path, transcriber.chunk_cues)
+            closed = False
+            try:
+                await transcriber.close_chunks()
+                closed = True
+            finally:
+                if translation_tasks:
+                    if not (stream_succeeded and closed):
+                        for task in translation_tasks:
+                            task.cancel()
+                    await asyncio.gather(*translation_tasks, return_exceptions=True)
+                # Shutdown can return final results before reporting a service
+                # error. Keep those results available to the resumed dialog.
+                if self._word_mode:
+                    self.db.delete_cues([cue.id for cue in self.db.list_cues() if is_preview_cue_id(cue.id)])
+                    self.db.upsert_cues(transcriber.chunk_cues, stable=False)
+                    self._word_timeline = None
+                    view = self._word_view().cues()
+                else:
+                    self.db.replace_transcript(transcriber.chunk_cues)
+                    view = self.db.list_cues(stable_only=True)
+                await self._write_partial(partial_path, view)
         self.db.checkpoint("stream_capture_complete", True)
         await self._detect_play_res(artifact.media_path)
         await self._finish_stage("acquire", "stream acquisition complete")
@@ -1049,6 +1065,9 @@ class YakiFlowJob:
                 await self._report_draft_batch_progress()
 
         async def event(item: TranscriptEvent) -> None:
+            if item.cue.metadata.get("transient"):
+                await self.emit("transcript", "provisional preview subtitle", cue=item.cue)
+                return
             if item.final:
                 return
             incremental.append(item.cue)

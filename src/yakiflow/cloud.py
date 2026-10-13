@@ -1,4 +1,5 @@
 """Shared cloud credentials and durable transcription metadata."""
+
 from __future__ import annotations
 
 import json
@@ -19,6 +20,7 @@ def keyring_key(provider: str) -> str | None:
         return _KEYRING_CACHE[provider]
     try:
         import keyring
+
         key = keyring.get_password("yakiflow", provider)
     except Exception:
         return None
@@ -29,8 +31,14 @@ def keyring_key(provider: str) -> str | None:
 
 def api_key_source(settings: Settings, provider: str, env: str) -> str:
     config = getattr(settings, provider.replace("-", "_"))
-    slot = next((name for name in ("api_key", "api_key_file", "api_key_command")
-                 if getattr(config, name) is not None), None)
+    slot = next(
+        (
+            name
+            for name in ("api_key", "api_key_file", "api_key_command")
+            if getattr(config, name) is not None
+        ),
+        None,
+    )
     if slot and config.api_key_from_cli:
         return slot
     if os.environ.get(env, "").strip():
@@ -53,14 +61,26 @@ def api_key(settings: Settings, provider: str, env: str) -> str:
         except OSError as exc:
             raise ValueError(f"cannot read {provider}.api-key-file: {exc}") from exc
     elif source == "api_key_command":
-        result = subprocess.run(config.api_key_command, shell=True, capture_output=True, text=True)
+        result = subprocess.run(
+            config.api_key_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if result.returncode:
-            raise ValueError(f"{provider}.api-key-command exited with status {result.returncode}")
+            raise ValueError(
+                f"{provider}.api-key-command exited with status {result.returncode}"
+            )
         key = result.stdout.strip()
     else:
-        raise ValueError(f"no {provider} API key; set {env}, {provider}.api-key / api-key-file / api-key-command, or yakiflow secret set {provider}")
+        raise ValueError(
+            f"no {provider} API key; set {env}, {provider}.api-key / api-key-file / api-key-command, or yakiflow secret set {provider}"
+        )
     if not key:
-        raise ValueError(f"{provider}.{source.replace('_', '-')} produced an empty API key")
+        raise ValueError(
+            f"{provider}.{source.replace('_', '-')} produced an empty API key"
+        )
     return key
 
 
@@ -71,17 +91,24 @@ def save_raw(work_dir: Path, provider: str, name: str, data: object) -> Path:
     return path
 
 
-def effective_diarization(db: JobDatabase, provider: str, audio: Path, minutes: int) -> bool:
+def effective_diarization(
+    db: JobDatabase, provider: str, audio: Path, minutes: int
+) -> bool:
     saved = db.get_checkpoint("diarization_state")
     if saved is not None:
         if saved["backend"] != provider:
-            raise ValueError("stored diarization belongs to a different transcription backend")
+            raise ValueError(
+                "stored diarization belongs to a different transcription backend"
+            )
         return bool(saved["enabled"])
     duration = pcm_audio_duration(audio)
     if duration is None:
         raise ValueError("cannot measure complete recording duration for diarization")
     enabled = minutes > 0 and duration < minutes * 60
-    db.checkpoint("diarization_state", {"backend": provider, "enabled": enabled, "duration": duration})
+    db.checkpoint(
+        "diarization_state",
+        {"backend": provider, "enabled": enabled, "duration": duration},
+    )
     return enabled
 
 
@@ -89,5 +116,7 @@ def http_client(extra: str):
     try:
         import httpx
     except ImportError:
-        raise RuntimeError(f"install yakiflow[{extra}] for HTTP transcription") from None
-    return httpx.Client(timeout=120, follow_redirects=True)
+        raise RuntimeError(
+            f"install yakiflow[{extra}] for HTTP transcription"
+        ) from None
+    return httpx.Client(timeout=600 if extra == "mai" else 120, follow_redirects=True)

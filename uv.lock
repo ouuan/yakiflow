@@ -257,6 +257,35 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-cognitiveservices-speech"
+version = "1.52.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/c5/12717b3b6081ca55adb2ef5e67cf123ff050ea06a744b5b9fee845ba41b3/azure_cognitiveservices_speech-1.52.0-py3-none-macosx_10_14_x86_64.whl", hash = "sha256:521814286e6dea4d98ee4561b93ad2f1866ce88441c14ed70e52e78c01797019", size = 3272495, upload-time = "2026-09-28T19:07:57.355Z" },
+    { url = "https://files.pythonhosted.org/packages/24/11/8ead066cc689d99d8f61c7457b504d8a37cbe08d68958701623d0075d561/azure_cognitiveservices_speech-1.52.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9d0697b29ca7f489508a73c9982ebcbb90e19e6db8677a72da01f02965225d6a", size = 3075556, upload-time = "2026-09-28T19:07:59.047Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/0a/17db1b7f153ba1823998c76ab63047519d10e2ffe39b43ecec4d4fe1f6da/azure_cognitiveservices_speech-1.52.0-py3-none-manylinux1_x86_64.whl", hash = "sha256:baf3ae9bdd1e75336a22f859d854a3c0f9dd7078b9144f2d432441e77be9f91c", size = 2676233, upload-time = "2026-09-28T19:08:00.966Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/c1/111ad7a060f568b877fce70f4d4b1d1bf46d93dd8b863bf012a4e280d55a/azure_cognitiveservices_speech-1.52.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:ad4563b39f916da636de7780a00769d355c4d990f9fb2411d5200106489cd5e4", size = 2638684, upload-time = "2026-09-28T19:08:02.355Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/9f/b7dc2a70c7b1f6b262b9178d3698d714d1cae53f17e092a9e0b377deaa30/azure_cognitiveservices_speech-1.52.0-py3-none-win_amd64.whl", hash = "sha256:e422eb31733864d383a44b94801babc2ca4b48597695c99bf314b92316a3580d", size = 2404070, upload-time = "2026-09-28T19:08:04.041Z" },
+    { url = "https://files.pythonhosted.org/packages/be/e4/0190174696a93a1f5f457d9b369b75203cde595379b7f28a5be6c40ef795/azure_cognitiveservices_speech-1.52.0-py3-none-win_arm64.whl", hash = "sha256:fce8d3cfc7d83a95f245bd7004bec7316a72114e2622c7c65b426cc45693ca6a", size = 2237012, upload-time = "2026-09-28T19:08:05.508Z" },
+]
+
+[[package]]
+name = "azure-core"
+version = "1.41.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a6/f3/b416179e408990df5db0d516283022dde0f5d0111d98c1a848e41853e81c/azure_core-1.41.0.tar.gz", hash = "sha256:f46ff5dfcd230f25cf1c19e8a34b8dc08a337b2503e268bb600a16c00db8ad5a", size = 381042, upload-time = "2026-05-07T23:30:54.302Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/db/325c6d7312d2200251c52323878281045aaffcb5586612296484e4280eaa/azure_core-1.41.0-py3-none-any.whl", hash = "sha256:522b4011e8180b1a3dcd2024396a4e7fe9ac37fb8597db47163d230b5efe892d", size = 220920, upload-time = "2026-05-07T23:30:56.357Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -3690,6 +3719,10 @@ fun-asr = [
 keyring = [
     { name = "keyring" },
 ]
+mai = [
+    { name = "azure-cognitiveservices-speech" },
+    { name = "httpx" },
+]
 socks = [
     { name = "httpx", extra = ["socks"] },
 ]
@@ -3714,9 +3747,11 @@ whisperx-cuda = [
 
 [package.metadata]
 requires-dist = [
+    { name = "azure-cognitiveservices-speech", marker = "extra == 'mai'", specifier = ">=1.52,<2" },
     { name = "dashscope", marker = "extra == 'fun-asr'", specifier = ">=1.23.1,<2" },
     { name = "elevenlabs", marker = "extra == 'elevenlabs'", specifier = ">=2.60,<3" },
     { name = "httpx", marker = "extra == 'fun-asr'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'mai'", specifier = ">=0.27" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'socks'" },
     { name = "keyring", marker = "extra == 'keyring'", specifier = ">=25" },
     { name = "platformdirs", specifier = ">=4.2" },
@@ -3736,7 +3771,7 @@ requires-dist = [
     { name = "whisperx", marker = "extra == 'whisperx-cpu'", specifier = ">=3.8.4,<3.9" },
     { name = "whisperx", marker = "extra == 'whisperx-cuda'", specifier = ">=3.8.4,<3.9" },
 ]
-provides-extras = ["dev", "elevenlabs", "fun-asr", "keyring", "socks", "whisperx-cpu", "whisperx-cuda"]
+provides-extras = ["dev", "elevenlabs", "mai", "fun-asr", "keyring", "socks", "whisperx-cpu", "whisperx-cuda"]
 
 [[package]]
 name = "yarl"

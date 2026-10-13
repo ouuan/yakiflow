@@ -709,3 +709,11 @@ def test_old_stream_configuration_is_rejected(tmp_path):
         load_settings(user_file=MISSING, project_file=config)
     with pytest.raises(ValueError, match="realtime backend"):
         validate_run_settings(_validatable(transcription={"stream_backend": "elevenlabs"}))
+
+
+def test_resumed_stream_agent_backend_switch_uses_new_backend_default():
+    stored = asdict(_validatable())
+    settings = load_settings(stored=stored, user_file=MISSING, project_file=MISSING,
+                             cli_config={"agent": {"stream": {"backend": "claude"}}})
+    assert settings.agent.stream.model == "sonnet"
+    assert settings.agent.stream.batch_size == settings.agent.draft.batch_size

@@ -86,7 +86,8 @@ def _probe_cuda() -> tuple[bool, str]:
 
 
 def run_doctor(
-    settings: Settings, *, source_is_url: bool | None = None
+    settings: Settings, *, source_is_url: bool | None = None,
+    transcription_required: bool = True, alignment_required: bool = True
 ) -> list[Check]:
     """Check everything this configuration needs, fatal parts marked as such.
 
@@ -110,7 +111,7 @@ def run_doctor(
         False,
     ))
     _which(checks, "yt-dlp", settings.commands.yt_dlp, fatal=source_is_url is not False)
-    backend = settings.transcription.backend
+    backend = settings.transcription.backend if transcription_required else ""
     if backend == "whisper-cli":
         _which(checks, "whisper-cli", settings.whisper.cli)
     elif backend == "whisper-server":
@@ -118,7 +119,7 @@ def run_doctor(
             checks.append(_probe_server_url(settings.whisper.server_url))
         else:
             _which(checks, "whisper-server", settings.whisper.server)
-    if needs_local_whisper(settings):
+    if transcription_required and needs_local_whisper(settings):
         model = settings.whisper.model
         present = bool(model and model.is_file())
         # The run downloads the default model itself, so only a configured
@@ -169,7 +170,21 @@ def run_doctor(
                                 "installed" if installed else "install yakiflow[fun-asr]"))
         source = api_key_source(settings, "fun-asr", "DASHSCOPE_API_KEY")
         checks.append(Check("fun-asr API key", source != "not set", source))
-    if settings.alignment.backend == "whisperx":
+    if backend.startswith("mai"):
+        from .cloud import api_key_source
+        module = "azure.cognitiveservices.speech" if backend.endswith("-stream") else "httpx"
+        try:
+            installed = importlib.util.find_spec(module) is not None
+        except ModuleNotFoundError:
+            installed = False
+        checks.append(Check(f"mai {module}", installed,
+                            "installed" if installed else "install yakiflow[mai]"))
+        source = api_key_source(settings, "mai", "SPEECH_KEY")
+        checks.append(Check("mai API key", source != "not set", source))
+        configured = bool(settings.mai.region or (backend == "mai" and settings.mai.endpoint))
+        checks.append(Check("mai region/endpoint", configured,
+                            settings.mai.region or settings.mai.endpoint or "set mai.region / SPEECH_REGION"))
+    if alignment_required and settings.alignment.backend == "whisperx":
         whisperx_installed = importlib.util.find_spec("whisperx") is not None
         checks.append(
             Check(

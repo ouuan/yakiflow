@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -25,7 +26,24 @@ TRANSCRIPTION_BACKENDS = (
     "elevenlabs-stream",
     "fun-asr",
     "fun-asr-stream",
+    "mai",
+    "mai-stream",
 )
+STREAM_BACKENDS = (
+    "whisper-cli",
+    "whisper-server",
+    "elevenlabs-stream",
+    "fun-asr-stream",
+    "mai-stream",
+)
+_STREAM_DEFAULTS = {
+    backend: (
+        "whisper-server"
+        if backend.startswith("whisper")
+        else backend.removesuffix("-stream") + "-stream"
+    )
+    for backend in TRANSCRIPTION_BACKENDS
+}
 EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 
 # The three spellings of the single "where does the ElevenLabs key come from"
@@ -101,6 +119,19 @@ class FunASRSettings:
     api_url: str = "https://dashscope.aliyuncs.com/api/v1"
     realtime_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
     diarize_max_minutes: int = 120
+
+
+@dataclass(frozen=True, slots=True)
+class MAISettings:
+    api_key: str | None = None
+    api_key_file: Path | None = _path()
+    api_key_command: str | None = None
+    api_key_from_cli: bool = field(default=False, metadata={"internal": True})
+    region: str | None = None
+    endpoint: str | None = None
+    model: str = "MAI-Transcribe-2"
+    realtime_model: str = "MAI-Transcribe-2-Streaming"
+    diarize_max_minutes: int = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +244,7 @@ class Settings:
     whisper: WhisperSettings = _grp(WhisperSettings)
     elevenlabs: ElevenLabsSettings = _grp(ElevenLabsSettings)
     fun_asr: FunASRSettings = _grp(FunASRSettings)
+    mai: MAISettings = _grp(MAISettings)
     alignment: AlignmentSettings = _grp(AlignmentSettings)
     stream: bool = False
     subtitles: SubtitleSettings = _grp(SubtitleSettings)
@@ -224,14 +256,20 @@ class Settings:
     def diarization_enabled(self) -> bool:
         """Whether cues can carry speakers.
 
-        Only the batch ElevenLabs backend diarizes; the realtime backend and
-        the Whisper backends never label speakers.
+        Batch cloud backends can diarize. A job's duration-based decision
+        overrides this configured capability once the complete audio exists.
         """
         if self.actual_diarization is not None:
             return self.actual_diarization
         return (
             (self.transcription.backend == "elevenlabs" and self.elevenlabs.diarize)
-            or (self.transcription.backend == "fun-asr" and self.fun_asr.diarize_max_minutes > 0)
+            or (
+                self.transcription.backend == "fun-asr"
+                and self.fun_asr.diarize_max_minutes > 0
+            )
+            or (
+                self.transcription.backend == "mai" and self.mai.diarize_max_minutes > 0
+            )
         )
 
     def resolved(self) -> Settings:
@@ -259,11 +297,22 @@ class Settings:
             ),
         )
         draft = self._resolved_stage(self.agent.draft, "draft")
-        stream_values = {f.name: (getattr(self.agent.stream, f.name)
-                         if getattr(self.agent.stream, f.name) is not None
-                         else getattr(draft, f.name)) for f in fields(draft)}
-        if self.agent.stream.backend and self.agent.stream.backend != draft.backend and not self.agent.stream.model:
-            stream_values["model"] = _STAGE_MODEL_DEFAULTS["draft"].get(self.agent.stream.backend)
+        stream_values = {
+            f.name: (
+                getattr(self.agent.stream, f.name)
+                if getattr(self.agent.stream, f.name) is not None
+                else getattr(draft, f.name)
+            )
+            for f in fields(draft)
+        }
+        if (
+            self.agent.stream.backend
+            and self.agent.stream.backend != draft.backend
+            and not self.agent.stream.model
+        ):
+            stream_values["model"] = _STAGE_MODEL_DEFAULTS["draft"].get(
+                self.agent.stream.backend
+            )
         agent = replace(
             self.agent,
             draft=draft,
@@ -279,10 +328,21 @@ class Settings:
                 path.expanduser().resolve() for path in self.context_files
             ),
             work_dir=absolute(self.work_dir),
-            transcription=replace(self.transcription, stream_backend=self.transcription.stream_backend or ("whisper-server" if self.transcription.backend.startswith("whisper") else ("fun-asr-stream" if self.transcription.backend.startswith("fun-asr") else "elevenlabs-stream"))),
+            transcription=replace(
+                self.transcription,
+                stream_backend=self.transcription.stream_backend
+                or _STREAM_DEFAULTS.get(self.transcription.backend),
+            ),
             whisper=whisper,
             elevenlabs=elevenlabs,
-            fun_asr=replace(self.fun_asr, api_key_file=absolute(self.fun_asr.api_key_file)),
+            fun_asr=replace(
+                self.fun_asr, api_key_file=absolute(self.fun_asr.api_key_file)
+            ),
+            mai=replace(
+                self.mai,
+                api_key_file=absolute(self.mai.api_key_file),
+                region=self.mai.region or os.environ.get("SPEECH_REGION") or None,
+            ),
             alignment=alignment,
             agent=agent,
         )
@@ -291,10 +351,18 @@ class Settings:
         """Select the capture backend and agent without changing saved batch settings."""
         return replace(
             self,
-            transcription=replace(self.transcription, backend=self.transcription.stream_backend),
-            agent=replace(self.agent, draft=DraftAgentSettings(**{
-                f.name: getattr(self.agent.stream, f.name) for f in fields(DraftAgentSettings)
-            })),
+            transcription=replace(
+                self.transcription, backend=self.transcription.stream_backend
+            ),
+            agent=replace(
+                self.agent,
+                draft=DraftAgentSettings(
+                    **{
+                        f.name: getattr(self.agent.stream, f.name)
+                        for f in fields(DraftAgentSettings)
+                    }
+                ),
+            ),
             alignment=replace(self.alignment, backend="none"),
         )
 
@@ -376,7 +444,11 @@ def _read_toml(
             raise ValueError(f"profile {name!r} must be a table in {path}")
         for key in values:
             if key.replace("-", "_") in {
-                "profile", "profiles", "inherit", "inherits", "extends",
+                "profile",
+                "profiles",
+                "inherit",
+                "inherits",
+                "extends",
             }:
                 raise ValueError(
                     f"profile {name!r} cannot inherit from another profile in {path}"
@@ -424,9 +496,7 @@ def _clean(
                     f"{dotted!r} is a table of settings, not a single value"
                     + (f" in {source}" if source else "")
                 )
-            result[key] = _clean(
-                value, source=source, cls=group, prefix=f"{dotted}."
-            )
+            result[key] = _clean(value, source=source, cls=group, prefix=f"{dotted}.")
             continue
         if isinstance(value, Mapping):
             raise ValueError(
@@ -451,7 +521,7 @@ def _clean(
             result[key] = tuple(value)
         else:
             result[key] = value
-    if cls in (ElevenLabsSettings, FunASRSettings) and source is not None:
+    if cls in (ElevenLabsSettings, FunASRSettings, MAISettings) and source is not None:
         slots = [name for name in _API_KEY_SLOT if name in result]
         if len(slots) > 1:
             listed = ", ".join(name.replace("_", "-") for name in slots)
@@ -466,16 +536,26 @@ def _clean(
 def _merge_layer(base: dict[str, Any], overlay: Mapping[str, Any]) -> None:
     """Deep-merge one cleaned configuration layer into ``base``, leaf by leaf.
 
-    The ElevenLabs API-key slot merges as a unit: a layer that sets any of its
+    Each provider's API-key slot merges as a unit: a layer that sets any of its
     three spellings replaces whichever spelling a lower layer had chosen.
     """
-    for provider in ("elevenlabs", "fun_asr"):
+    for provider in ("elevenlabs", "fun_asr", "mai"):
         incoming = overlay.get(provider)
-        if isinstance(incoming, Mapping) and any(name in incoming for name in _API_KEY_SLOT):
+        if isinstance(incoming, Mapping) and any(
+            name in incoming for name in _API_KEY_SLOT
+        ):
             existing = base.get(provider)
             if isinstance(existing, dict):
                 for name in _API_KEY_SLOT:
                     existing.pop(name, None)
+    stream = overlay.get("agent", {}).get("stream", {})
+    previous = base.get("agent", {}).get("stream", {})
+    if (
+        "backend" in stream
+        and stream["backend"] != previous.get("backend")
+        and "model" not in stream
+    ):
+        previous.pop("model", None)
     _deep_merge(base, overlay)
 
 
@@ -562,7 +642,7 @@ def load_settings(
     flag_layer = _clean(cli or {}, source=None)
     _merge_layer(merged, flag_layer)
     for layer in (config_layer, flag_layer):
-        for provider in ("elevenlabs", "fun_asr"):
+        for provider in ("elevenlabs", "fun_asr", "mai"):
             group = layer.get(provider, {})
             if any(name in group for name in _API_KEY_SLOT):
                 merged.setdefault(provider, {})["api_key_from_cli"] = True
@@ -579,13 +659,21 @@ def _require_non_negative(value: float, name: str) -> None:
         raise ValueError(f"{name} cannot be negative")
 
 
-def validate_run_settings(settings: Settings) -> None:
+def validate_run_settings(
+    settings: Settings, *, check_credentials: bool = True
+) -> None:
     if not isinstance(settings.stream, bool):
-        raise ValueError("stream must be a boolean; the old [stream] table is unsupported")
-    if settings.transcription.stream_backend not in {"whisper-cli", "whisper-server", "elevenlabs-stream", "fun-asr-stream"}:
-        raise ValueError("transcription.stream-backend must be Whisper or a realtime backend")
+        raise ValueError(
+            "stream must be a boolean; the old [stream] table is unsupported"
+        )
     if settings.transcription.backend not in TRANSCRIPTION_BACKENDS:
-        raise ValueError("transcription.backend must be one of " + ", ".join(TRANSCRIPTION_BACKENDS))
+        raise ValueError(
+            "transcription.backend must be one of " + ", ".join(TRANSCRIPTION_BACKENDS)
+        )
+    if settings.transcription.stream_backend not in STREAM_BACKENDS:
+        raise ValueError(
+            "transcription.stream-backend must be Whisper or a realtime backend"
+        )
     if settings.stream:
         settings = settings.for_stream()
     if not settings.target_language:
@@ -595,18 +683,11 @@ def validate_run_settings(settings: Settings) -> None:
             "source-language is required (-s/--source-language; "
             "use 'auto' for automatic detection)"
         )
-    if settings.transcription.backend not in TRANSCRIPTION_BACKENDS:
-        raise ValueError(
-            "transcription.backend must be one of "
-            + ", ".join(TRANSCRIPTION_BACKENDS)
-            + " (--transcription-backend)"
-        )
     if settings.output_mode not in {"source", "translated", "bilingual", "all"}:
         raise ValueError(
-            "output-mode must be source, translated, bilingual, or all "
-            "(--output-mode)"
+            "output-mode must be source, translated, bilingual, or all (--output-mode)"
         )
-    word_level = not settings.transcription.backend.startswith("whisper")
+    cloud_backend = not settings.transcription.backend.startswith("whisper")
     if settings.whisper.server_url is not None:
         parsed = urlparse(settings.whisper.server_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -616,32 +697,63 @@ def validate_run_settings(settings: Settings) -> None:
             )
     if settings.alignment.backend not in {"vad", "whisperx", "none"}:
         raise ValueError("alignment.backend must be vad, whisperx, or none")
-    if word_level and settings.alignment.backend == "vad":
+    if cloud_backend and settings.alignment.backend == "vad":
         raise ValueError(
             "alignment.backend 'vad' needs Whisper's VAD intervals; use "
-            "'none' (or 'whisperx') with an ElevenLabs transcription backend"
+            "'none' (or 'whisperx') with a cloud transcription backend"
         )
     if settings.alignment.device not in {"auto", "cpu", "cuda"}:
         raise ValueError("alignment.device must be auto, cpu, or cuda")
-    if settings.transcription.backend.startswith("fun-asr"):
+    if check_credentials and settings.transcription.backend.startswith("fun-asr"):
         from .cloud import api_key
+
         api_key(settings, "fun-asr", "DASHSCOPE_API_KEY")
-    if settings.transcription.backend.startswith("elevenlabs"):
+    if check_credentials and settings.transcription.backend.startswith("elevenlabs"):
         from .elevenlabs import elevenlabs_api_key
 
         elevenlabs_api_key(settings)
     threshold = settings.fun_asr.diarize_max_minutes
     if type(threshold) is not int or threshold < 0:
         raise ValueError("fun-asr.diarize-max-minutes must be a non-negative integer")
-    for name, url, schemes in (("api-url", settings.fun_asr.api_url, {"http", "https"}),
-                               ("realtime-url", settings.fun_asr.realtime_url, {"ws", "wss"})):
+    for name, url, schemes in (
+        ("api-url", settings.fun_asr.api_url, {"http", "https"}),
+        ("realtime-url", settings.fun_asr.realtime_url, {"ws", "wss"}),
+    ):
         parsed = urlparse(url)
         if parsed.scheme not in schemes or not parsed.netloc:
             raise ValueError(f"fun-asr.{name} must be a valid URL")
-    if not settings.fun_asr.model.startswith("fun-asr") or "flash" in settings.fun_asr.model or "realtime" in settings.fun_asr.model:
-        raise ValueError("fun-asr.model must select a batch Fun-ASR model; Flash is unsupported")
+    if (
+        not settings.fun_asr.model.startswith("fun-asr")
+        or "flash" in settings.fun_asr.model
+        or "realtime" in settings.fun_asr.model
+    ):
+        raise ValueError(
+            "fun-asr.model must select a batch Fun-ASR model; Flash is unsupported"
+        )
     if not settings.fun_asr.realtime_model.startswith("fun-asr-realtime"):
         raise ValueError("fun-asr.realtime-model must select Fun-ASR realtime")
+    threshold = settings.mai.diarize_max_minutes
+    if type(threshold) is not int or threshold < 0:
+        raise ValueError("mai.diarize-max-minutes must be a non-negative integer")
+    if settings.mai.endpoint:
+        parsed = urlparse(settings.mai.endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("mai.endpoint must be an http(s) URL")
+    if settings.transcription.backend.startswith("mai"):
+        from .cloud import api_key
+
+        if check_credentials:
+            api_key(settings, "mai", "SPEECH_KEY")
+        if not settings.mai.region and (
+            settings.transcription.backend == "mai-stream" or not settings.mai.endpoint
+        ):
+            raise ValueError(
+                "mai.region or SPEECH_REGION is required (or mai.endpoint for REST)"
+            )
+    if settings.mai.region and not all(
+        c.isalnum() or c == "-" for c in settings.mai.region
+    ):
+        raise ValueError("mai.region must be an Azure region identifier")
     num_speakers = settings.elevenlabs.num_speakers
     if num_speakers is not None and not 1 <= num_speakers <= 32:
         raise ValueError(
@@ -659,8 +771,7 @@ def validate_run_settings(settings: Settings) -> None:
             )
         if stage.effort not in EFFORT_LEVELS:
             raise ValueError(
-                f"agent.{stage_name}.effort must be one of "
-                + ", ".join(EFFORT_LEVELS)
+                f"agent.{stage_name}.effort must be one of " + ", ".join(EFFORT_LEVELS)
             )
     draft = settings.agent.draft
     _require_positive(draft.workers, "agent.draft.workers")
@@ -674,9 +785,7 @@ def validate_run_settings(settings: Settings) -> None:
     )
     _require_positive(draft.timeout_seconds, "agent.draft.timeout-seconds")
     _require_positive(draft.max_attempts, "agent.draft.max-attempts")
-    _require_non_negative(
-        draft.retry_delay_seconds, "agent.draft.retry-delay-seconds"
-    )
+    _require_non_negative(draft.retry_delay_seconds, "agent.draft.retry-delay-seconds")
     _require_positive(settings.subtitles.max_cue_seconds, "subtitles.max-cue-seconds")
     if settings.subtitles.max_cue_chars < 8:
         raise ValueError("subtitles.max-cue-chars must be at least 8")
@@ -687,8 +796,11 @@ def validate_run_settings(settings: Settings) -> None:
         and not settings.review.open_command
     ):
         raise ValueError(
-            "review.open-command is required when review.display-mode is "
-            "open or both"
+            "review.open-command is required when review.display-mode is open or both"
         )
-    _require_positive(settings.whisper.stream_chunk_seconds, "whisper.stream-chunk-seconds")
-    _require_non_negative(settings.whisper.stream_context_seconds, "whisper.stream-context-seconds")
+    _require_positive(
+        settings.whisper.stream_chunk_seconds, "whisper.stream-chunk-seconds"
+    )
+    _require_non_negative(
+        settings.whisper.stream_context_seconds, "whisper.stream-context-seconds"
+    )
