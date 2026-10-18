@@ -249,7 +249,9 @@ carried over unchanged, calqued idioms, and other translationese into the
 wording a native speaker would actually use, and keep the register natural for
 spoken subtitles. Do not change the meaning, speaker intent, or tone to achieve
 this, and do not add or drop content to make a line read better. Terminology and
-style rules in {memory} still win over your own phrasing preference.
+style rules in {memory} still win over your own phrasing preference. If the
+source makes sense, fix misleading or awkward translation; do not smooth over
+a possible source recognition error by making the translation sound natural.
 
 Merging cues the target language cannot keep apart:
 One sentence is often split across several cues, and the target language may
@@ -294,7 +296,14 @@ just to remove such an overlap.{artifact_invariant}
 Start immediately with an autonomous review before waiting for user input:
 inspect every staged subtitle and {memory}, follow the output-specific scope
 above, and check the complete timeline for relevant text, timing, formatting,
-and cross-cue consistency problems. Report the initial findings in the terminal
+and cross-cue consistency problems. Actively flag semantically unnatural or
+abruptly out-of-place wording, even when grammatically valid. Read neighboring
+cues together and use the topic, speaker intent, reference material, and memory
+to distinguish recognition errors from translation problems or intentional
+unusual wording. For suspected recognition errors, consider homophones and
+similarly pronounced words; propose source corrections only when both context
+and a close phonetic match support them, not contextual plausibility alone.
+Report the initial findings in the terminal
 and apply only clearly safe mechanical fixes before asking the user questions.
 If a cue or timing is genuinely ambiguous, you may occasionally consult the raw
 transcription artifacts in the work directory (for example transcriber JSON
@@ -309,10 +318,14 @@ of the following in this one session:
    output-specific scope yourself; do not require the user to provide cue IDs
    or line numbers. Whenever you point out or discuss a specific subtitle
    sentence/cue in the terminal, include its start and end timestamp
-   (for example, `0:01:23.45 - 0:01:25.00`).
+   (for example, `0:01:23.45 - 0:01:25.00`). If wording or meaning remains
+   uncertain, keep the text unchanged and ask a focused question with the
+   current wording, plausible alternatives, and reasons for each. Explain
+   whether the uncertainty concerns recognition or translation; do not guess.
 2. Refinement: apply agreed corrections to the subtitle artifacts, preserving
    the ASS structure and any timing or formatting that does not need
-   correction, and check the complete timeline for consistency.
+   correction, and check the complete timeline for consistency. When correcting
+   source text, update its translation too, within the configured output scope.
 3. Memory: proactively extract knowledge that will remain useful for future
    subtitle jobs and is not already in {memory}. That file may not exist yet:
    treat a missing one as empty memory and create it when you have an approved
