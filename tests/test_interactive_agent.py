@@ -66,6 +66,27 @@ def test_interactive_prompt_scopes_review_to_final_output(
     assert "0:01:23.45 - 0:01:25.00" in normalized
 
 
+def test_interactive_prompt_repeats_every_review_cue_and_does_not_trust_asr_alone(
+    tmp_path: Path,
+) -> None:
+    prompt = build_interactive_prompt(
+        Settings(source_language="en", target_language="zh-CN"),
+        tmp_path,
+    )
+
+    normalized = " ".join(prompt.split())
+    assert "raw ASR result is evidence, never proof" in normalized
+    assert "do not declare a cue correct solely because ASR produced that wording" in normalized
+    assert "semantically abrupt or out of place" in normalized
+    assert "actively consider similarly pronounced words" in normalized
+    assert "ask the user to decide" in normalized
+    assert "Whenever you ask the user for review feedback, confirmation, or a decision" in normalized
+    assert "list every related subtitle cue in that message, one entry per cue" in normalized
+    assert "Repeat the complete list every time" in normalized
+    assert "even when the same cues were listed earlier in the conversation" in normalized
+    assert "The final change summary presented for the user's review must also repeat every related subtitle cue" in normalized
+
+
 @pytest.mark.parametrize(
     ("output_mode", "expects_phrasing_scope"),
     [

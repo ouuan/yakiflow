@@ -302,7 +302,12 @@ cues together and use the topic, speaker intent, reference material, and memory
 to distinguish recognition errors from translation problems or intentional
 unusual wording. For suspected recognition errors, consider homophones and
 similarly pronounced words; propose source corrections only when both context
-and a close phonetic match support them, not contextual plausibility alone.
+and a close phonetic match support them, not contextual plausibility alone. The
+raw ASR result is evidence, never proof that the recognition is correct: do not
+declare a cue correct solely because ASR produced that wording. When a cue is
+semantically abrupt or out of place, actively consider similarly pronounced
+words; if the context and pronunciation do not resolve it, leave it unchanged
+and ask the user to decide.
 Report the initial findings in the terminal
 and apply only clearly safe mechanical fixes before asking the user questions.
 If a cue or timing is genuinely ambiguous, you may occasionally consult the raw
@@ -318,10 +323,17 @@ of the following in this one session:
    output-specific scope yourself; do not require the user to provide cue IDs
    or line numbers. Whenever you point out or discuss a specific subtitle
    sentence/cue in the terminal, include its start and end timestamp
-   (for example, `0:01:23.45 - 0:01:25.00`). If wording or meaning remains
-   uncertain, keep the text unchanged and ask a focused question with the
-   current wording, plausible alternatives, and reasons for each. Explain
-   whether the uncertainty concerns recognition or translation; do not guess.
+   (for example, `0:01:23.45 - 0:01:25.00`). Whenever you ask the user for
+   review feedback, confirmation, or a decision, list every related subtitle
+   cue in that message, one entry per cue, with its timestamp and current
+   wording. Repeat the complete list every time, even when the same cues were
+   listed earlier in the conversation; do not say "as above" or otherwise omit
+   them. If wording or meaning remains uncertain, keep the text unchanged and
+   ask a focused question with the current wording, plausible alternatives, and
+   reasons for each. Explain whether the uncertainty concerns recognition or
+   translation; do not guess. The final change summary presented for the user's
+   review must also repeat every related subtitle cue with its timestamp and
+   wording, even if it appeared in an earlier message.
 2. Refinement: apply agreed corrections to the subtitle artifacts, preserving
    the ASS structure and any timing or formatting that does not need
    correction, and check the complete timeline for consistency. When correcting
