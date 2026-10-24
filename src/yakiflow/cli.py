@@ -7,6 +7,7 @@ import shlex
 import signal
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -14,12 +15,19 @@ from .config import (
     TRANSCRIPTION_BACKENDS,
     Settings,
     load_settings,
+    validate_review_settings,
     validate_run_settings,
 )
-from .doctor import advisory_failures, fatal_failures, run_doctor
+from .doctor import (
+    Check,
+    advisory_failures,
+    fatal_failures,
+    run_doctor,
+    run_review_doctor,
+)
 from .job import YakiFlowJob
 from .media import MediaSource
-from .models import JobEvent
+from .models import JobEvent, OutputMode
 from .models_manager import fetch_model
 from .interactive_agent import (
     run_interactive_agent,
@@ -27,6 +35,7 @@ from .interactive_agent import (
     start_agent_file_display,
 )
 from .memory import MemoryDestinationConflict
+from .subtitles import subtitle_layout
 
 
 def _resume_command(work_dir: Path) -> str:
@@ -56,7 +65,22 @@ def _parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="resume a preserved work directory")
     resume.add_argument("workdir", type=Path)
     _config_arguments(resume)
-    for parser_ in (run, resume):
+    review = sub.add_parser(
+        "review",
+        help="review existing ASS subtitles with the interactive Agent",
+    )
+    review.add_argument("subtitles", nargs="+", type=Path, metavar="SUBTITLE")
+    review.add_argument(
+        "--media",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "the media the subtitles belong to, for the review preview and "
+            "as reference for the Agent; it is not transcribed"
+        ),
+    )
+    _job_arguments(review)
+    for parser_ in (run, resume, review):
         parser_.add_argument(
             "--skip-health-check",
             action="store_true",
@@ -100,12 +124,21 @@ def _config_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _settings_arguments(parser: argparse.ArgumentParser) -> None:
-    _config_arguments(parser)
-    parser.add_argument("-s", "--source-language")
-    parser.add_argument("-t", "--target-language")
+    _job_arguments(parser)
     parser.add_argument(
         "--stream", action=argparse.BooleanOptionalAction, default=None
     )
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--transcription-backend", choices=list(TRANSCRIPTION_BACKENDS)
+    )
+
+
+def _job_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the settings flags that reviewing existing subtitles shares with run."""
+    _config_arguments(parser)
+    parser.add_argument("-s", "--source-language")
+    parser.add_argument("-t", "--target-language")
     parser.add_argument(
         "--context-file",
         dest="context_files",
@@ -117,12 +150,8 @@ def _settings_arguments(parser: argparse.ArgumentParser) -> None:
             "review; repeatable"
         ),
     )
-    parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
         "--output-mode", choices=["source", "translated", "bilingual", "all"]
-    )
-    parser.add_argument(
-        "--transcription-backend", choices=list(TRANSCRIPTION_BACKENDS)
     )
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument(
@@ -206,18 +235,72 @@ def _resume_overrides(namespace: argparse.Namespace) -> Mapping[str, Any]:
     return parse_config_items(getattr(namespace, "config_items", []))
 
 
-def _health_check(settings: Settings, input_value: str, *, reuse_live: bool = False) -> None:
-    """Refuse to start a run whose environment cannot carry it through.
+def _review_settings(namespace: argparse.Namespace) -> Settings:
+    """Settle the layout and languages of the subtitles under review.
+
+    A dedicated flag wins over what the file names say, which wins over the
+    configuration.
+    """
+    settings = _settings(namespace)
+    layouts = [
+        subtitle_layout(
+            path,
+            source_language=settings.source_language,
+            target_language=settings.target_language,
+        )
+        for path in namespace.subtitles
+    ]
+    if len(layouts) == 1:
+        layout = layouts[0]
+        mode = namespace.output_mode or (
+            layout.mode if layout is not None else settings.output_mode
+        )
+        if mode == OutputMode.ALL:
+            raise ValueError(
+                "an 'all' output is reviewed as one set: pass its source, "
+                "translated, and bilingual files together"
+            )
+    else:
+        if namespace.output_mode not in (None, OutputMode.ALL):
+            raise ValueError(
+                f"--output-mode {namespace.output_mode} reviews a single file"
+            )
+        known = [layout for layout in layouts if layout is not None]
+        if not (
+            len(known) == len(layouts) == 3
+            and {layout.mode for layout in known}
+            == {OutputMode.SOURCE, OutputMode.TRANSLATED, OutputMode.BILINGUAL}
+            and len({layout.base for layout in known}) == 1
+        ):
+            raise ValueError(
+                "several subtitle files are reviewed together only as one "
+                "'all' output: its source, translated, and bilingual files"
+            )
+        mode = OutputMode.ALL
+        layout = next(
+            layout for layout in known if layout.mode is OutputMode.BILINGUAL
+        )
+    named_source = layout.source_language if layout is not None else None
+    named_target = layout.target_language if layout is not None else None
+    return replace(
+        settings,
+        output_mode=str(mode),
+        source_language=(
+            namespace.source_language or named_source or settings.source_language
+        ),
+        target_language=(
+            namespace.target_language or named_target or settings.target_language
+        ),
+    )
+
+
+def _require_healthy(checks: Sequence[Check]) -> None:
+    """Refuse to start a job whose environment cannot carry it through.
 
     Every fatal failure is reported at once, so one startup tells the whole
     story instead of each stage stopping the job on its own missing piece.
-    Advisory failures are only warned about and never hold up a run.
+    Advisory failures are only warned about and never hold up a job.
     """
-    checks = run_doctor(
-        settings.for_stream() if settings.stream else settings,
-        source_is_url=MediaSource.parse(input_value).is_url,
-        **({"transcription_required": False, "alignment_required": False} if reuse_live else {}),
-    )
     for check in advisory_failures(checks):
         print(f"yakiflow: warning: {check.name}: {check.detail}", file=sys.stderr)
     failures = fatal_failures(checks)
@@ -229,6 +312,14 @@ def _health_check(settings: Settings, input_value: str, *, reuse_live: bool = Fa
             f"health check failed:{listed}\n"
             "Fix these, or pass --skip-health-check to start anyway."
         )
+
+
+def _health_check(settings: Settings, input_value: str, *, reuse_live: bool = False) -> None:
+    _require_healthy(run_doctor(
+        settings.for_stream() if settings.stream else settings,
+        source_is_url=MediaSource.parse(input_value).is_url,
+        **({"transcription_required": False, "alignment_required": False} if reuse_live else {}),
+    ))
 
 
 def _read_secret(prompt: str) -> str:
@@ -316,6 +407,7 @@ async def _complete_job(
                 # the next review session needs to know.
                 previous_problems=job.db.get_checkpoint("review_problems", []),
                 runner=job.runner,
+                review_only=job.review_only,
             )
         finally:
             await display.close()
@@ -378,10 +470,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             # The stored configuration bypasses argparse, so re-check it here
             # instead of failing deep inside a resumed stage.
-            reuse_live = bool(job.settings.stream and job.db.artifact("reference_audio"))
-            validate_run_settings(job.settings, check_credentials=not reuse_live)
+            if job.review_only:
+                validate_review_settings(job.settings)
+                if not args.skip_health_check:
+                    _require_healthy(run_review_doctor(job.settings))
+            else:
+                reuse_live = bool(job.settings.stream and job.db.artifact("reference_audio"))
+                validate_run_settings(job.settings, check_credentials=not reuse_live)
+                if not args.skip_health_check:
+                    _health_check(job.settings, job.input_value, reuse_live=reuse_live)
+        elif args.command == "review":
+            # Checked before anything is created: without a terminal there is
+            # no one to review with.
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                raise ValueError("review needs an interactive terminal")
+            settings = _review_settings(args)
+            validate_review_settings(settings)
             if not args.skip_health_check:
-                _health_check(job.settings, job.input_value, reuse_live=reuse_live)
+                _require_healthy(run_review_doctor(settings))
+            job = YakiFlowJob.for_review(
+                args.subtitles, settings, media=args.media, listener=_print_event
+            )
+            return asyncio.run(_complete_job(job, job.outputs))
         else:
             settings = _settings(args)
             validate_run_settings(settings)
@@ -391,7 +501,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _health_check(settings, args.input)
             job = YakiFlowJob(args.input, settings, listener=_print_event)
         job.skip_health_check = args.skip_health_check
-        if sys.stdin.isatty() and sys.stdout.isatty():
+        # A review-only job has no pipeline for the TUI to show.
+        if sys.stdin.isatty() and sys.stdout.isatty() and not job.review_only:
             from . import tui
 
             succeeded = tui.run(job)

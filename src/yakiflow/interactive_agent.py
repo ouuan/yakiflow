@@ -168,11 +168,35 @@ def build_interactive_prompt(
     outputs: Sequence[Path] = (),
     context_files: Sequence[Path] = (),
     previous_problems: Sequence[str] = (),
+    *,
+    review_only: bool = False,
+    media: Path | None = None,
 ) -> str:
     output_list = "\n".join(f"- {path}" for path in outputs) or (
         "- inspect the published subtitle files in the work directory"
     )
     memory = work_dir / "memory.md"
+    provenance = (
+        """The user asked you to review these existing subtitle
+files (working copies):"""
+        if review_only
+        else """The batch pipeline has finished and published these
+subtitle artifacts:"""
+    )
+    publication = (
+        """YakiFlow writes your edits back over the original files after
+this session."""
+        if review_only
+        else """YakiFlow will publish your edits after this session and remove the
+destination-side draft snapshot."""
+    )
+    media_section = ""
+    if review_only and media is not None:
+        media_section = f"""
+The media these subtitles belong to is {media}. YakiFlow did not transcribe
+it: it is read-only reference material that you may inspect when it helps,
+for example with ffprobe or ffmpeg. Never edit it.
+"""
     context_section = ""
     if context_files:
         context_list = "\n".join(f"- {path}" for path in context_files)
@@ -242,7 +266,25 @@ field, translation first and source second, separated by `\\N`."""
         if output_mode in {OutputMode.BILINGUAL, OutputMode.ALL}
         else ""
     )
-    phrasing_scope = "" if output_mode is OutputMode.SOURCE else f"""
+    header_rule = (
+        """. Keep the header sections,
+styles, `Comment:` lines, `{...}` override tags, and the Layer, Style,
+Margin, and Effect fields as they are unless the user asks otherwise. Each
+Dialogue's Name field is the speaker label: leave it unchanged unless the
+user asks for a speaker change."""
+        if review_only
+        else """; the header sections
+above it are regenerated wholesale at publish time, so changing them has no
+effect on what is published. Each Dialogue's Name field is the diarized
+speaker label: leave it unchanged unless the user asks for a speaker change."""
+    )
+    raw_output_hint = "" if review_only else """
+If a cue or timing is genuinely ambiguous, you may occasionally consult the raw
+transcription artifacts in the work directory (for example transcriber JSON
+output or the `process_logs` table in `job.sqlite3`), but do not routinely
+reread raw output when the published subtitles already provide enough evidence."""
+    transcriber_artifacts = "" if review_only else " and the transcriber artifacts"
+    phrasing_scope ="" if output_mode is OutputMode.SOURCE else f"""
 Phrasing quality for the target language ({settings.target_language or 'the configured target'}):
 Every target line must read as if it had been written in that language, not
 translated into it. Rewrite literal word-by-word renderings, source word order
@@ -267,14 +309,12 @@ its own after a natural rewrite, keep the original split and timing.{merge_mirro
 """
     return f"""You are the interactive YakiFlow subtitle editor.
 
-Work directly in {work_dir}. The batch pipeline has finished and published these
-subtitle artifacts:
+Work directly in {work_dir}. {provenance}
 {output_list}
 
 The staged subtitle files in this work directory are the files to inspect and
-edit. YakiFlow will publish your edits after this session and remove the
-destination-side draft snapshot.
-{context_section}{previous_problems_section}
+edit. {publication}
+{media_section}{context_section}{previous_problems_section}
 
 The source language is {settings.source_language or 'detected automatically'} and
 the target language is {settings.target_language or 'the configured target'}.
@@ -285,10 +325,7 @@ Review and editing scope for the configured final output:
 {phrasing_scope}
 Subtitle file format:
 The staged files are ASS (Advanced SubStation Alpha) documents. Your editing
-surface is the `Dialogue:` lines in the `[Events]` section; the header sections
-above it are regenerated wholesale at publish time, so changing them has no
-effect on what is published. Each Dialogue's Name field is the diarized
-speaker label: leave it unchanged unless the user asks for a speaker change.
+surface is the `Dialogue:` lines in the `[Events]` section{header_rule}
 Line breaks inside a subtitle are written as `\\N` in the Text field.{bilingual_layout}
 Cues of two different named speakers may legitimately overlap in time — that
 is simultaneous speech, not an error — so never merge, delete, or retime cues
@@ -310,11 +347,7 @@ semantically abrupt or out of place, actively consider similarly pronounced
 words; if the context and pronunciation do not resolve it, leave it unchanged
 and ask the user to decide.
 Report the initial findings in the terminal
-and apply only clearly safe mechanical fixes before asking the user questions.
-If a cue or timing is genuinely ambiguous, you may occasionally consult the raw
-transcription artifacts in the work directory (for example transcriber JSON
-output or the `process_logs` table in `job.sqlite3`), but do not routinely
-reread raw output when the published subtitles already provide enough evidence.
+and apply only clearly safe mechanical fixes before asking the user questions.{raw_output_hint}
 
 Then work with the user conversationally until they are satisfied. Handle all
 of the following in this one session:
@@ -368,7 +401,7 @@ of the following in this one session:
 
 Exactly two kinds of file are yours to edit: the staged subtitle artifacts
 listed above and {memory}. Everything else in the work directory is read-only
-evidence, including `job.sqlite3` and the transcriber artifacts: editing them
+evidence, including `job.sqlite3`{transcriber_artifacts}: editing them
 changes nothing about what YakiFlow publishes and can corrupt the job's resume
 state. Keep the staged subtitle outputs and memory internally consistent.
 When the user says the session is complete, summarize the changes and exit.
@@ -476,11 +509,14 @@ async def run_interactive_agent(
     context_files: Sequence[Path] = (),
     previous_problems: Sequence[str] = (),
     runner: CommandRunner | None = None,
+    review_only: bool = False,
 ) -> ProcessResult:
     """Hand the terminal to the configured interactive Agent CLI."""
     runner = runner or CommandRunner()
     prompt = build_interactive_prompt(
-        settings, work_dir, outputs, context_files, previous_problems
+        settings, work_dir, outputs, context_files, previous_problems,
+        review_only=review_only,
+        media=_source_media(work_dir) if review_only else None,
     )
     command = build_interactive_command(settings, prompt)
     env = stage_interactive_workspace(settings, work_dir)

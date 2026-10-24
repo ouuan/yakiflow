@@ -52,6 +52,7 @@ from .subtitles import (
     AssEvent,
     alignment_problems,
     ass_problems,
+    canonical_play_res,
     canonicalized_ass,
     event_problems,
     output_modes,
@@ -197,6 +198,7 @@ class YakiFlowJob:
         listener: EventListener | None = None,
         _resume: bool = False,
         _temporary: bool | None = None,
+        _review: Mapping[str, object] | None = None,
     ):
         settings = settings.resolved()
         source = MediaSource.parse(input_value)
@@ -227,12 +229,17 @@ class YakiFlowJob:
         self.runner = runner or CommandRunner()
         self.db = JobDatabase(self.work_dir / "job.sqlite3")
         self.listener = listener
-        self.backend = backend or make_backend(
-            settings.agent.draft.backend or "",
-            self.work_dir,
-            self.runner,
-            options=settings.agent.draft.extra_options or (),
-        )
+        if _review is not None or self.db.get_checkpoint("review_only") is not None:
+            # Reviewing existing subtitles drafts nothing, so the draft
+            # backend may legitimately be unset.
+            self.backend = backend
+        else:
+            self.backend = backend or make_backend(
+                settings.agent.draft.backend or "",
+                self.work_dir,
+                self.runner,
+                options=settings.agent.draft.extra_options or (),
+            )
         self.memory_destination = settings.memory
         self.memory_path = self.work_dir / "memory.md"
         existing_job = self.db.job() is not None
@@ -268,6 +275,8 @@ class YakiFlowJob:
                 {"settings_schema": SETTINGS_SCHEMA_VERSION, **asdict(settings)},
             )
             self.db.checkpoint("temporary_workdir", self.temporary_workdir)
+            if _review is not None:
+                self.db.checkpoint("review_only", dict(_review))
         job_row = self.db.job()
         self._resume_status = (
             JobStatus(job_row["status"])
@@ -330,6 +339,11 @@ class YakiFlowJob:
     def is_finished(self) -> bool:
         """True when this work directory holds an already-reviewed job."""
         return self._resume_status is JobStatus.COMPLETE
+
+    @property
+    def review_only(self) -> bool:
+        """Whether this job reviews existing subtitles instead of making them."""
+        return self.db.get_checkpoint("review_only") is not None
 
     @property
     def _word_mode(self) -> bool:
@@ -461,6 +475,109 @@ class YakiFlowJob:
             _temporary=temporary is True,
         )
 
+    @classmethod
+    def for_review(
+        cls,
+        subtitles: Sequence[Path],
+        settings: Settings,
+        *,
+        media: Path | None = None,
+        runner: CommandRunner | None = None,
+        listener: EventListener | None = None,
+    ) -> YakiFlowJob:
+        """Stage existing ASS files for the interactive review alone.
+
+        The job starts out reviewing: nothing is transcribed or drafted, and
+        finalizing writes the reviewed copies back over the originals. Every
+        input is checked before the work directory exists, so a refused
+        review leaves nothing behind to resume or clean up.
+        """
+        originals = [Path(path).expanduser().resolve() for path in subtitles]
+        if not originals:
+            raise ValueError("no subtitle files to review")
+        for path in originals:
+            if path.suffix.lower() != ".ass":
+                raise ValueError(f"only ASS subtitles can be reviewed: {path}")
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"subtitle file does not exist or is not a file: {path}"
+                )
+        if len(set(originals)) < len(originals):
+            raise ValueError("each subtitle file can only be reviewed once")
+        if len({path.parent for path in originals}) > 1:
+            raise ValueError(
+                "subtitle files reviewed together must be in one directory"
+            )
+        texts: list[str] = []
+        parsed: list[list[AssEvent]] = []
+        # Defects the originals already have are the subtitles as the user
+        # brought them, not something the review broke, so they never block
+        # writing the review back.
+        tolerated: set[str] = set()
+        for path in originals:
+            try:
+                text = path.read_bytes().decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    f"{path} is not valid UTF-8 at byte {exc.start}"
+                ) from None
+            events, problems = parse_ass(text)
+            if not events:
+                raise ValueError(f"{path} contains no subtitle cues")
+            tolerated.update(
+                problem.kind for problem in [*problems, *event_problems(events)]
+            )
+            texts.append(text)
+            parsed.append(events)
+        if alignment_problems(list(zip((path.name for path in originals), parsed))):
+            tolerated.add("artifact_mismatch")
+        if media is not None:
+            media = Path(media).expanduser().resolve()
+            if not media.is_file():
+                raise FileNotFoundError(
+                    f"media file does not exist or is not a file: {media}"
+                )
+        # Only a file YakiFlow itself wrote may be canonicalized again; any
+        # other keeps its own header, styles, and override tags.
+        canonical: dict[str, list[int]] = {}
+        for path, text in zip(originals, texts):
+            play_res = canonical_play_res(text)
+            if play_res is not None:
+                canonical[path.name] = list(play_res)
+        job = cls(
+            str(originals[0]),
+            replace(settings, stream=False),
+            runner=runner,
+            listener=listener,
+            _review={
+                "tolerated_problems": sorted(tolerated),
+                "canonical_play_res": canonical,
+            },
+        )
+        try:
+            outputs: list[Path] = []
+            for original in originals:
+                staged = job.work_dir / original.name
+                shutil.copy2(original, staged)
+                outputs.append(staged)
+            if media is not None:
+                job.db.add_artifact("source_media", media)
+            # Show the speaker column when the files name any speaker.
+            diarized = any(event.name for events in parsed for event in events)
+            job.db.checkpoint("diarization_state", {"enabled": diarized})
+            job.settings = replace(job.settings, actual_diarization=diarized)
+            job.db.checkpoint("review_outputs", [str(path) for path in outputs])
+            # Only its parent is used: each reviewed file goes back over the
+            # original of the same name.
+            job.db.checkpoint("output_destination_base", str(originals[0]))
+            job.db.set_status(JobStatus.REVIEWING)
+        except BaseException:
+            job.close(cleanup=True)
+            raise
+        job.outputs = outputs
+        job._output_destination_base = originals[0]
+        return job
+
     async def emit(
         self,
         kind: str,
@@ -516,6 +633,8 @@ class YakiFlowJob:
         await self.emit("warning", message)
 
     def _translation_pipeline(self) -> TranslationPipeline:
+        # Only a review-only job has no backend, and it never drafts.
+        assert self.backend is not None
         return TranslationPipeline(
             self.settings,
             self.backend,
@@ -666,7 +785,10 @@ class YakiFlowJob:
                 "published and reviewed, so there is nothing to resume"
             )
         try:
-            if self._resume_status is JobStatus.REVIEWING:
+            # A review-only job has nothing else to run: one whose staging
+            # stopped part-way reports its missing files here instead of
+            # transcribing its subtitle file as media.
+            if self._resume_status is JobStatus.REVIEWING or self.review_only:
                 self.outputs = self._restore_review_outputs()
                 await self.emit(
                     "published", "restored subtitles awaiting review", 1.0,
@@ -1615,6 +1737,10 @@ class YakiFlowJob:
         saved_outputs = self.db.get_checkpoint("review_outputs")
         if saved_outputs:
             outputs = [Path(path) for path in saved_outputs]
+        elif self.review_only:
+            # Staging stopped before it finished, so whatever copies it left
+            # are not the complete set of files under review.
+            outputs = []
         else:
             # Compatibility for jobs that reached REVIEWING before exact paths
             # were checkpointed. Incomplete snapshots are never final outputs.
@@ -1657,25 +1783,39 @@ class YakiFlowJob:
         user's subtitles with something worse than the pre-review text.
         The surviving problem list is checkpointed so the next review session
         starts from what stopped this one, and cleared once publishing passes.
+
+        A review of existing subtitles has no rendering of its own: it
+        tolerates the defects its originals already had, and repairs only the
+        files YakiFlow wrote, at the resolution they were written at. Any
+        other ASS file keeps its own header, styles, and override tags.
         """
-        cues = self.db.list_cues(stable_only=True)
-        if not cues:
-            return
-        play_res = self.play_res
-        rendered = [
-            render_ass(cues, mode, play_res)
-            for mode in output_modes(self.settings.output_mode)
-        ]
-        tolerated = {
-            problem.kind for text in rendered for problem in ass_problems(text)
-        }
-        if alignment_problems([
-            (str(index), parse_ass(text)[0])
-            for index, text in enumerate(rendered)
-        ]):
-            # The pipeline's own artifacts already disagree, so the review
-            # neither caused this nor can fix it.
-            tolerated.add("artifact_mismatch")
+        review = self.db.get_checkpoint("review_only")
+        if review is not None:
+            tolerated = set(review["tolerated_problems"])
+            play_res_by_name = {
+                name: (int(width), int(height))
+                for name, (width, height) in review["canonical_play_res"].items()
+            }
+        else:
+            cues = self.db.list_cues(stable_only=True)
+            if not cues:
+                return
+            play_res = self.play_res
+            rendered = [
+                render_ass(cues, mode, play_res)
+                for mode in output_modes(self.settings.output_mode)
+            ]
+            tolerated = {
+                problem.kind for text in rendered for problem in ass_problems(text)
+            }
+            if alignment_problems([
+                (str(index), parse_ass(text)[0])
+                for index, text in enumerate(rendered)
+            ]):
+                # The pipeline's own artifacts already disagree, so the review
+                # neither caused this nor can fix it.
+                tolerated.add("artifact_mismatch")
+            play_res_by_name = {staged.name: play_res for staged in self.outputs}
         problems: list[str] = []
         artifacts: list[tuple[str, Sequence[AssEvent]]] = []
         for staged in self.outputs:
@@ -1689,7 +1829,10 @@ class YakiFlowJob:
                     f"{staged.name}: is not valid UTF-8 at byte {exc.start}"
                 )
                 continue
-            repaired = canonicalized_ass(text, play_res)
+            play_res = play_res_by_name.get(staged.name)
+            repaired = (
+                canonicalized_ass(text, play_res) if play_res is not None else None
+            )
             if repaired is not None:
                 write_text_atomic(staged, repaired)
                 text = repaired
@@ -1750,9 +1893,12 @@ class YakiFlowJob:
             self.outputs = destinations
             # Remove the corresponding draft snapshot from the configured
             # output directory once the finished subtitle has been published.
-            draft_name = f"{destination_base.name}{_DRAFT_PARTIAL_SUFFIX}"
-            (destination_base.parent / draft_name).unlink(missing_ok=True)
-            (self.work_dir / draft_name).unlink(missing_ok=True)
+            # A review of existing subtitles never wrote one, so a file of
+            # that name beside them belongs to someone else.
+            if not self.review_only:
+                draft_name = f"{destination_base.name}{_DRAFT_PARTIAL_SUFFIX}"
+                (destination_base.parent / draft_name).unlink(missing_ok=True)
+                (self.work_dir / draft_name).unlink(missing_ok=True)
         if self.memory_destination and self.memory_path.is_file():
             self.memory_destination.parent.mkdir(parents=True, exist_ok=True)
             if self.memory_path.resolve() != self.memory_destination.resolve():

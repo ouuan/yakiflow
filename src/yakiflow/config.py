@@ -710,10 +710,7 @@ def validate_run_settings(
             "source-language is required (-s/--source-language; "
             "use 'auto' for automatic detection)"
         )
-    if settings.output_mode not in {"source", "translated", "bilingual", "all"}:
-        raise ValueError(
-            "output-mode must be source, translated, bilingual, or all (--output-mode)"
-        )
+    _validate_output_mode(settings)
     cloud_backend = not settings.transcription.backend.startswith("whisper")
     if settings.whisper.server_url is not None:
         parsed = urlparse(settings.whisper.server_url)
@@ -782,21 +779,7 @@ def validate_run_settings(
             "speakers diarization separates"
         )
     for stage_name in ("draft", "final"):
-        stage = getattr(settings.agent, stage_name)
-        if stage.backend is None:
-            raise ValueError(
-                "agent.backend is required (" + ", ".join(AGENT_BACKENDS) + ")"
-            )
-        if stage.backend not in AGENT_BACKENDS:
-            raise ValueError(
-                f"agent.{stage_name}.backend must be one of "
-                + ", ".join(AGENT_BACKENDS)
-                + f", got {stage.backend!r}"
-            )
-        if stage.effort not in EFFORT_LEVELS:
-            raise ValueError(
-                f"agent.{stage_name}.effort must be one of " + ", ".join(EFFORT_LEVELS)
-            )
+        _validate_agent_stage(settings, stage_name)
     draft = settings.agent.draft
     _require_positive(draft.workers, "agent.draft.workers")
     _require_positive(draft.batch_size, "agent.draft.batch-size")
@@ -813,6 +796,54 @@ def validate_run_settings(
     _require_positive(settings.subtitles.max_cue_seconds, "subtitles.max-cue-seconds")
     if settings.subtitles.max_cue_chars < 8:
         raise ValueError("subtitles.max-cue-chars must be at least 8")
+    _validate_review_display(settings)
+    _require_positive(
+        settings.whisper.stream_chunk_seconds, "whisper.stream-chunk-seconds"
+    )
+    _require_non_negative(
+        settings.whisper.stream_context_seconds, "whisper.stream-context-seconds"
+    )
+
+
+def validate_review_settings(settings: Settings) -> None:
+    """Check what reviewing existing subtitles needs.
+
+    Nothing is transcribed or drafted, so the draft Agent, the transcription
+    backend, its credentials, and the source language all go unchecked.
+    """
+    _validate_output_mode(settings)
+    if settings.output_mode != "source" and not settings.target_language:
+        raise ValueError("target-language is required (-t/--target-language)")
+    _validate_agent_stage(settings, "final")
+    _validate_review_display(settings)
+
+
+def _validate_output_mode(settings: Settings) -> None:
+    if settings.output_mode not in {"source", "translated", "bilingual", "all"}:
+        raise ValueError(
+            "output-mode must be source, translated, bilingual, or all (--output-mode)"
+        )
+
+
+def _validate_agent_stage(settings: Settings, stage_name: str) -> None:
+    stage = getattr(settings.agent, stage_name)
+    if stage.backend is None:
+        raise ValueError(
+            "agent.backend is required (" + ", ".join(AGENT_BACKENDS) + ")"
+        )
+    if stage.backend not in AGENT_BACKENDS:
+        raise ValueError(
+            f"agent.{stage_name}.backend must be one of "
+            + ", ".join(AGENT_BACKENDS)
+            + f", got {stage.backend!r}"
+        )
+    if stage.effort not in EFFORT_LEVELS:
+        raise ValueError(
+            f"agent.{stage_name}.effort must be one of " + ", ".join(EFFORT_LEVELS)
+        )
+
+
+def _validate_review_display(settings: Settings) -> None:
     if settings.review.display_mode not in {"split", "open", "both"}:
         raise ValueError("review.display-mode must be split, open, or both")
     if (
@@ -822,9 +853,3 @@ def validate_run_settings(
         raise ValueError(
             "review.open-command is required when review.display-mode is open or both"
         )
-    _require_positive(
-        settings.whisper.stream_chunk_seconds, "whisper.stream-chunk-seconds"
-    )
-    _require_non_negative(
-        settings.whisper.stream_context_seconds, "whisper.stream-context-seconds"
-    )

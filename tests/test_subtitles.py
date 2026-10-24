@@ -2,14 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from yakiflow.models import Cue
+from yakiflow.models import Cue, OutputMode
 from yakiflow.subtitles import (
     ASS_HEADER,
     DEFAULT_PLAY_RES,
     AssEvent,
+    SubtitleLayout,
     ass_header,
     alignment_problems,
     ass_problems,
+    canonical_play_res,
     canonicalized_ass,
     cue_text_lines,
     event_problems,
@@ -18,6 +20,7 @@ from yakiflow.subtitles import (
     publish_outputs,
     render_ass,
     render_events,
+    subtitle_layout,
     timestamp,
 )
 
@@ -304,6 +307,22 @@ def test_canonicalized_ass_returns_none_for_unfixable_input() -> None:
     assert canonicalized_ass(broken) is None
 
 
+def test_canonical_play_res_accepts_only_what_yakiflow_writes() -> None:
+    cues = [Cue("1", 0.0, 1.0, "hi", "嗨", speaker="1")]
+    written = render_ass(cues, "bilingual", (1080, 1920))
+
+    assert canonical_play_res(written) == (1080, 1920)
+    # Canonicalizing either of these would discard the user's styling.
+    assert canonical_play_res(written.replace("sans-serif", "Noto Sans CJK SC")) is None
+    assert canonical_play_res(written.replace(",嗨", r",{\i1}嗨")) is None
+    assert canonical_play_res(ass_header((1080, 1920))) is None
+    without_resolution = "".join(
+        line for line in written.splitlines(keepends=True)
+        if not line.startswith("PlayRes")
+    )
+    assert canonical_play_res(without_resolution) is None
+
+
 def test_canonicalized_ass_preserves_legal_speaker_overlap() -> None:
     cues = [
         Cue("1", 0.0, 4.0, "a", "甲", speaker="1"),
@@ -375,6 +394,60 @@ def test_publish_outputs_names_ass_files_by_mode_and_language(
         events, problems = parse_ass(path.read_text(encoding="utf-8"))
         assert problems == []
         assert events[0].name == "1"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("movie.source.ass", SubtitleLayout(OutputMode.SOURCE, "movie")),
+        ("Movie.Translated.ASS", SubtitleLayout(OutputMode.TRANSLATED, "Movie")),
+        (
+            "movie.en-fr.ass",
+            SubtitleLayout(OutputMode.BILINGUAL, "movie", "en", "fr"),
+        ),
+        (
+            "movie.en-es-419.ass",
+            SubtitleLayout(OutputMode.BILINGUAL, "movie", "en", "es-419"),
+        ),
+        # Both ja | zh-cn and ja-zh | cn are language-shaped.
+        ("movie.ja-zh-cn.ass", SubtitleLayout(OutputMode.BILINGUAL, "movie")),
+        ("movie.ass", None),
+        ("movie.final.ass", None),
+        ("movie.2024-01.ass", None),
+        ("movie.source.srt", None),
+        ("en-fr.ass", None),
+    ],
+)
+def test_subtitle_layout_reads_published_names(
+    name: str, expected: SubtitleLayout | None
+) -> None:
+    assert subtitle_layout(Path("subs") / name) == expected
+
+
+def test_subtitle_layout_splits_an_ambiguous_pair_by_the_given_languages() -> None:
+    path = Path("movie.ja-zh-cn.ass")
+
+    assert subtitle_layout(path, target_language="zh_CN") == SubtitleLayout(
+        OutputMode.BILINGUAL, "movie", "ja", "zh_CN"
+    )
+    assert subtitle_layout(path, source_language="ja") == SubtitleLayout(
+        OutputMode.BILINGUAL, "movie", "ja", "zh-cn"
+    )
+    # A configured source language this file does not have does not stop
+    # the target language from settling the split.
+    assert subtitle_layout(
+        path, source_language="en", target_language="zh-CN"
+    ) == SubtitleLayout(OutputMode.BILINGUAL, "movie", "ja", "zh-CN")
+    # "auto" names no language, and languages matching neither split leave
+    # the pair as ambiguous as before.
+    for hints in ({"source_language": "auto"}, {"target_language": "fr"}):
+        assert subtitle_layout(path, **hints) == SubtitleLayout(
+            OutputMode.BILINGUAL, "movie"
+        )
+    # An unambiguous pair is what the name says, whatever is configured.
+    assert subtitle_layout(
+        Path("movie.en-fr.ass"), source_language="ja", target_language="zh-CN"
+    ) == SubtitleLayout(OutputMode.BILINGUAL, "movie", "en", "fr")
 
 
 def test_publish_bilingual_requires_languages(tmp_path: Path) -> None:

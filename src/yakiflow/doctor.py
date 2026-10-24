@@ -203,11 +203,29 @@ def run_doctor(
         else:
             selected = "cuda" if settings.alignment.device == "auto" and cuda_available else "cpu"
             checks.append(Check("WhisperX device", True, f"{selected} ({torch_detail})"))
-    agent_backends = {
+    _agent_checks(checks, {
         stage.backend
         for stage in (settings.agent.draft, settings.agent.final)
         if stage.backend
-    }
+    })
+    _review_display_checks(checks, settings)
+    return checks
+
+
+def run_review_doctor(settings: Settings) -> list[Check]:
+    """Check what reviewing existing subtitles needs: the review Agent and its display.
+
+    Nothing is downloaded, transcribed, or aligned, so none of those tools
+    are checked.
+    """
+    checks: list[Check] = []
+    backend = settings.agent.final.backend
+    _agent_checks(checks, {backend} if backend else set())
+    _review_display_checks(checks, settings)
+    return checks
+
+
+def _agent_checks(checks: list[Check], agent_backends: set[str]) -> None:
     # Without a configured backend, every Agent CLI is only a candidate:
     # none of them is missing from a run that has not chosen one.
     agent_fatal = bool(agent_backends)
@@ -237,6 +255,9 @@ def run_doctor(
             checks.append(Check(f"{name} auth", result.returncode == 0, detail[-1] if detail else f"exit {result.returncode}", agent_fatal))
         except (OSError, subprocess.SubprocessError) as exc:
             checks.append(Check(f"{name} auth", False, str(exc), agent_fatal))
+
+
+def _review_display_checks(checks: list[Check], settings: Settings) -> None:
     # Both review checks are advisory: without them the subtitles still get
     # written, only the review has no preview to show them in.
     if settings.review.display_mode in {"split", "both"}:
@@ -250,7 +271,6 @@ def run_doctor(
             executable = ""
         path = shutil.which(executable) if executable else None
         checks.append(Check("review open command", bool(path), path or "not found", False))
-    return checks
 
 
 def fatal_failures(checks: Sequence[Check]) -> list[Check]:

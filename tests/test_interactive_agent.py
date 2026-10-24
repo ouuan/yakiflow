@@ -362,6 +362,57 @@ def test_interactive_prompt_lists_read_only_context_files(tmp_path: Path) -> Non
     assert "do not edit or publish them" in prompt
 
 
+@pytest.mark.parametrize("output_mode", ["source", "translated", "bilingual", "all"])
+def test_review_only_prompt_preserves_foreign_ass_and_names_the_media(
+    tmp_path: Path, output_mode: str
+) -> None:
+    media = tmp_path / "movie.mkv"
+    settings = Settings(
+        source_language="ja", target_language="zh-CN", output_mode=output_mode
+    )
+    outputs = [tmp_path / "movie.ja-zh-cn.ass"]
+
+    prompt = build_interactive_prompt(
+        settings, tmp_path, outputs, review_only=True, media=media
+    )
+
+    normalized = " ".join(prompt.split())
+    assert "review these existing subtitle files (working copies)" in normalized
+    assert "writes your edits back over the original files" in normalized
+    assert f"The media these subtitles belong to is {media}." in normalized
+    assert "YakiFlow did not transcribe it" in normalized
+    assert "Never edit it." in normalized
+    assert (
+        "Keep the header sections, styles, `Comment:` lines, `{...}` override "
+        "tags, and the Layer, Style, Margin, and Effect fields as they are"
+    ) in normalized
+    assert "Name field is the speaker label" in normalized
+    # Nothing here was published, transcribed, or diarized by YakiFlow.
+    for absent in (
+        "batch pipeline", "draft snapshot", "regenerated wholesale",
+        "diarized", "transcriber", "process_logs",
+    ):
+        assert absent not in normalized
+    assert "The media these subtitles belong to" not in build_interactive_prompt(
+        settings, tmp_path, outputs, review_only=True
+    )
+
+
+def test_run_prompt_ignores_review_only_media(tmp_path: Path) -> None:
+    settings = Settings(source_language="ja", target_language="zh-CN")
+    outputs = [tmp_path / "movie.ja-zh-cn.ass"]
+
+    prompt = build_interactive_prompt(
+        settings, tmp_path, outputs, media=tmp_path / "movie.mkv"
+    )
+
+    assert prompt == build_interactive_prompt(settings, tmp_path, outputs)
+    normalized = " ".join(prompt.split())
+    assert "The batch pipeline has finished and published" in normalized
+    assert "`process_logs` table in `job.sqlite3`" in normalized
+    assert "`job.sqlite3` and the transcriber artifacts" in normalized
+
+
 def test_memory_conflict_prompt_scopes_agent_to_staged_memory(tmp_path: Path) -> None:
     destination = tmp_path / "durable" / "memory.md"
     prompt = build_memory_conflict_prompt(
@@ -764,3 +815,31 @@ def test_interactive_agent_forwards_previous_problems_into_the_prompt(
     assert "publish-blocking defects" in prompts[0]
     for problem in problems:
         assert f"- {problem}" in prompts[0]
+
+
+def test_review_only_agent_is_told_about_the_recorded_media(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TMUX", "test")
+    media = tmp_path / "movie.mkv"
+    monkeypatch.setattr(interactive_agent, "_source_media", lambda _work_dir: media)
+    prompts: list[str] = []
+
+    class Runner:
+        async def run_interactive(self, command, *, cwd=None, env=None):
+            prompts.append(command[-1])
+            return ProcessResult(tuple(command), 0, "", "")
+
+    for review_only in (True, False):
+        asyncio.run(
+            interactive_agent.run_interactive_agent(
+                make_settings(agent={"final": {"backend": "codex"}}),
+                tmp_path,
+                [tmp_path / "movie.ass"],
+                runner=Runner(),
+                review_only=review_only,
+            )
+        )
+
+    assert str(media) in prompts[0]
+    assert str(media) not in prompts[1]

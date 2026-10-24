@@ -37,6 +37,10 @@ DEFAULT_FILE_MODE = _probe_default_file_mode()
 
 
 _LANGUAGE_COMPONENT_RE = re.compile(r"[^a-z0-9-]+")
+# One side of a bilingual file name: a language subtag, then region, script,
+# or variant subtags, e.g. ``ja``, ``zh-cn``, ``es-419``.
+_LANGUAGE_SIDE_RE = re.compile(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})*")
+_PLAY_RES_RE = re.compile(r"^PlayRes([XY])\s*:\s*(\d+)\s*$", re.IGNORECASE)
 _TIMESTAMP_RE = re.compile(r"^\s*(\d+):(\d{1,2}):(\d{1,2})[.,](\d{1,3})\s*$")
 _SECTION_RE = re.compile(r"^\[(?P<name>[^\]]+)\]\s*$")
 # ASS soft (\n) and hard (\N) line breaks both separate display lines here.
@@ -219,8 +223,9 @@ def render_ass(
 def parse_ass(text: str) -> tuple[list[AssEvent], list[SubtitleProblem]]:
     """Parse Dialogue events, reporting the ones that do not parse.
 
-    Only ``Dialogue:`` lines inside ``[Events]`` matter; the header is
-    regenerated wholesale at publish time, so nothing in it is worth checking.
+    Only ``Dialogue:`` lines inside ``[Events]`` matter; publishing either
+    regenerates the header wholesale or, for a reviewed file YakiFlow did not
+    write, keeps it as it was, so nothing in it is worth checking.
     """
     events: list[AssEvent] = []
     problems: list[SubtitleProblem] = []
@@ -377,6 +382,32 @@ def canonicalized_ass(
     return None if canonical == text else canonical
 
 
+def canonical_play_res(text: str) -> tuple[int, int] | None:
+    """Return the resolution of a file already in YakiFlow's canonical form.
+
+    Only such a file may be canonicalized again after a review: rewriting the
+    header and fields of any other ASS file would discard its styles and
+    override tags.
+    """
+    section = ""
+    play_res: dict[str, int] = {}
+    for line in text.split("\n"):
+        header = _SECTION_RE.match(line.strip())
+        if header is not None:
+            section = header.group("name").strip().casefold()
+            continue
+        match = _PLAY_RES_RE.match(line.strip())
+        if section == "script info" and match is not None:
+            play_res[match.group(1).upper()] = int(match.group(2))
+    if "X" not in play_res or "Y" not in play_res:
+        return None
+    resolution = (play_res["X"], play_res["Y"])
+    events, problems = parse_ass(text)
+    if problems or not events or canonicalized_ass(text, resolution) is not None:
+        return None
+    return resolution
+
+
 def write_text_atomic(path: Path, text: str) -> None:
     """Replace ``path`` only once the new content is durably on disk.
 
@@ -452,3 +483,79 @@ def publish_outputs(
         write_ass_atomic(path, cues, selected, play_res)
         paths.append(path)
     return paths
+
+
+@dataclass(frozen=True, slots=True)
+class SubtitleLayout:
+    """What the name of a file written by :func:`publish_outputs` says."""
+
+    mode: OutputMode
+    base: str
+    source_language: str | None = None
+    target_language: str | None = None
+
+
+def _language_hint(language: str | None) -> str | None:
+    try:
+        component = _language_component(language or "")
+    except ValueError:
+        return None
+    return None if component == "auto" else component
+
+
+def subtitle_layout(
+    path: Path,
+    *,
+    source_language: str | None = None,
+    target_language: str | None = None,
+) -> SubtitleLayout | None:
+    """Read the layout back out of a published file name, or ``None``.
+
+    A bilingual pair such as ``ja-zh-cn`` can split at more than one hyphen,
+    so the given languages pick the split that agrees with them; a pair that
+    stays ambiguous is still bilingual but names no languages. A side that
+    matches a given language keeps that language's own spelling.
+    """
+    name = path.name
+    folded = name.lower()
+    for suffix, mode in (
+        (".source.ass", OutputMode.SOURCE),
+        (".translated.ass", OutputMode.TRANSLATED),
+    ):
+        if folded.endswith(suffix) and len(name) > len(suffix):
+            return SubtitleLayout(mode, name[: -len(suffix)])
+    if not folded.endswith(".ass"):
+        return None
+    base, dot, pair = name[: -len(".ass")].rpartition(".")
+    if not dot or not base:
+        return None
+    pair = pair.lower()
+    splits = [
+        (pair[:index], pair[index + 1:])
+        for index, char in enumerate(pair)
+        if char == "-"
+        and _LANGUAGE_SIDE_RE.fullmatch(pair[:index])
+        and _LANGUAGE_SIDE_RE.fullmatch(pair[index + 1:])
+    ]
+    if not splits:
+        return None
+    hints = (_language_hint(source_language), _language_hint(target_language))
+    if len(splits) > 1:
+        # A given language that matches no split says nothing about which
+        # one is right, so the split agreeing with the most of them wins.
+        scores = [
+            sum(hint == side for hint, side in zip(hints, split)) for split in splits
+        ]
+        best = max(scores)
+        splits = [
+            split for split, score in zip(splits, scores) if best and score == best
+        ]
+    if len(splits) != 1:
+        return SubtitleLayout(OutputMode.BILINGUAL, base)
+    source, target = splits[0]
+    return SubtitleLayout(
+        OutputMode.BILINGUAL,
+        base,
+        source_language if hints[0] == source else source,
+        target_language if hints[1] == target else target,
+    )

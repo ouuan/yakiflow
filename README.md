@@ -78,8 +78,8 @@ unnecessary for cloud backends. `WARN` indicates a missing optional tool, such
 as `tmux` for split-pane review. `doctor` cannot tell whether Gemini CLI is
 signed in, so run `gemini` once and sign in before your first job.
 
-`run` and `resume` also check the setup on startup. Use `--skip-health-check`
-if you are sure a reported check does not apply.
+`run`, `resume`, and `review` also check the setup on startup. Use
+`--skip-health-check` if you are sure a reported check does not apply.
 
 ### 5. Create subtitles
 
@@ -117,7 +117,7 @@ A few high-frequency settings have dedicated options:
 | `--context-file` | Provide a reference file for review; repeatable |
 | `--work-dir` | Choose a job work directory for resuming after interruption |
 | `--keep-workdir` | Keep intermediate files after success |
-| `--skip-health-check` | Start `run` or `resume` without the startup check |
+| `--skip-health-check` | Start `run`, `resume`, or `review` without the startup check |
 | `--config-file` | Use this project configuration file |
 | `--profile` | Select a `[profiles.NAME]` section |
 
@@ -363,6 +363,33 @@ different colors or positions in Aegisub:
 Every remaining `Default` line takes the style you assigned to that speaker's
 line. Lines you already restyled are left untouched, and one Ctrl-Z undoes the
 whole run.
+
+### Review existing subtitles
+
+To review subtitles you already have without transcribing anything, such as
+the output of a non-interactive run or a file made in another tool:
+
+```console
+yakiflow review video.ja-zh-cn.ass --media video.mp4
+```
+
+This opens the same interactive review as `run`, so it needs an interactive
+terminal. When the review session ends, the file is updated in place.
+
+Only ASS files can be reviewed; their header, styles, and override tags are
+kept as they are. YakiFlow recognizes its own file names (`.source.ass`,
+`.translated.ass`, `.ja-zh-cn.ass`) and reviews each file in its form. Other
+file names use the configured `output-mode`, or `--output-mode` if you pass
+it. To review the three files of an `all` output, pass them together:
+
+```console
+yakiflow review video.source.ass video.translated.ass video.ja-zh-cn.ass
+```
+
+`--media` is optional. With it, pressing `o` in the subtitle pane and
+`review.auto-open-video` open that file, and the Agent can refer to it. It is
+not transcribed. `-s`, `-t`, and `--context-file` work as they do for `run`.
+An interrupted review continues with `yakiflow resume`.
 
 ### Resume an interrupted job
 
@@ -620,7 +647,7 @@ are not supported.
 ### Configuration profiles
 
 Put reusable variants under `[profiles.NAME]` and select one with `--profile`
-on `run`, `resume`, `doctor`, or `models fetch`:
+on `run`, `resume`, `review`, `doctor`, or `models fetch`:
 
 ```toml
 source-language = "auto"

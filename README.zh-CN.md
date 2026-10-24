@@ -73,7 +73,7 @@ Whisper 后端。云端转录后端不需要 `models fetch`。`WARN` 表示缺�
 例如用于分屏审校的 `tmux`。`doctor` 无法判断 Gemini CLI 是否已登录，请在第一次
 运行任务前先运行一次 `gemini` 并完成登录。
 
-`run` 和 `resume` 启动时也会检查环境。确认检查不适用时，可以加上
+`run`、`resume` 和 `review` 启动时也会检查环境。确认检查不适用时，可以加上
 `--skip-health-check` 跳过。
 
 ### 5. 生成字幕
@@ -111,7 +111,7 @@ YakiFlow 会显示转录和翻译进度。在交互式终端中，随后会打�
 | `--context-file` | 为审校提供参考文件；可重复 |
 | `--work-dir` | 指定任务工作目录，供中断后续跑 |
 | `--keep-workdir` | 成功后保留中间文件 |
-| `--skip-health-check` | `run`、`resume` 启动时跳过环境检查 |
+| `--skip-health-check` | `run`、`resume`、`review` 启动时跳过环境检查 |
 | `--config-file` | 使用指定的项目配置文件 |
 | `--profile` | 选择一个 `[profiles.NAME]` 配置组 |
 
@@ -334,6 +334,31 @@ video-open-command = "mpv --script=/path/to/contrib/mpv/sub-autoreload.lua --no-
 
 其余所有 `Default` 行都会改成该说话人那一行的样式。已经改过样式的行不会被
 改动，整个操作一次 Ctrl-Z 即可撤销。
+
+### 审校已有字幕
+
+要不经转录、直接审校手头已有的字幕，例如非交互运行的结果或用其他工具制作的
+文件：
+
+```console
+yakiflow review video.ja-zh-cn.ass --media video.mp4
+```
+
+这会打开与 `run` 相同的交互式审校，因此需要在交互式终端中运行。审校会话结束
+后，原文件会被直接更新。
+
+只能审校 ASS 文件，文件头、样式和特效标签都保持原样。YakiFlow 能识别自己的
+文件命名（`.source.ass`、`.translated.ass`、`.ja-zh-cn.ass`），并按各文件的
+字幕形式审校。其他文件名使用配置的 `output-mode`，传入 `--output-mode` 时以它
+为准。要审校 `all` 输出的三个文件，把它们一起传入：
+
+```console
+yakiflow review video.source.ass video.translated.ass video.ja-zh-cn.ass
+```
+
+`--media` 可以省略。提供后，在字幕面板中按 `o` 和 `review.auto-open-video`
+都会打开该文件，Agent 也能参考它；该文件不会被转录。`-s`、`-t` 和
+`--context-file` 的用法与 `run` 相同。审校中断后，用 `yakiflow resume` 继续。
 
 ### 恢复中断的任务
 
@@ -570,8 +595,8 @@ mpv --no-sub-auto --no-resume-playback --sub-file={subtitle} --sid=auto --sub-vi
 
 ### 配置 profile
 
-把可复用的变体放在 `[profiles.NAME]` 下，并在 `run`、`resume`、`doctor` 或
-`models fetch` 时用 `--profile` 选择：
+把可复用的变体放在 `[profiles.NAME]` 下，并在 `run`、`resume`、`review`、
+`doctor` 或 `models fetch` 时用 `--profile` 选择：
 
 ```toml
 source-language = "auto"

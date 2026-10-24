@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import yakiflow.doctor as doctor_module
 from conftest import make_settings
-from yakiflow.doctor import run_doctor
+from yakiflow.doctor import run_doctor, run_review_doctor
 
 
 def _stub_dependencies(tmp_path: Path, monkeypatch) -> Path:
@@ -280,3 +280,24 @@ def test_doctor_checks_both_review_display_dependencies(
 
     assert mapped["tmux"].ok
     assert mapped["review open command"].ok
+
+
+def test_review_doctor_checks_only_the_review_agent_and_its_display(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _stub_dependencies(tmp_path, monkeypatch)
+
+    checks = run_review_doctor(
+        make_settings(
+            transcription={"backend": "elevenlabs"},
+            alignment={"backend": "whisperx"},
+            agent={"draft": {"backend": "gemini"}, "final": {"backend": "claude"}},
+            review={"display_mode": "both", "open_command": "editor {subtitle}"},
+        ).resolved()
+    )
+
+    # Nothing is downloaded, transcribed, aligned, or drafted.
+    assert [check.name for check in checks] == [
+        "claude auth", "tmux", "review open command",
+    ]
+    assert all(check.ok for check in checks)

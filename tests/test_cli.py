@@ -277,6 +277,8 @@ def test_tui_exit_prints_resume_guide(tmp_path: Path, monkeypatch, capsys) -> No
     work_dir = tmp_path / "preserved job"
 
     class FakeJob:
+        review_only = False
+
         def __init__(self, *, is_finished: bool = False) -> None:
             self.work_dir = work_dir
             self.is_finished = is_finished
@@ -460,3 +462,205 @@ def test_non_tty_run_prints_only_finalized_output_paths(
 
     assert asyncio.run(cli._run_job(FakeJob())) == 0
     assert capsys.readouterr().out == f"{finalized}\n"
+
+
+def _review_config(tmp_path: Path) -> Path:
+    config = tmp_path / "review.toml"
+    config.write_text(
+        'output-mode = "translated"\n'
+        'source-language = "ja"\n'
+        'target-language = "zh-CN"\n'
+        "[agent]\n"
+        'backend = "codex"\n'
+    )
+    return config
+
+
+def _review_settings(tmp_path: Path, *argv: str) -> Settings:
+    return cli._review_settings(cli._parser().parse_args([
+        "review", *argv, "--config-file", str(_review_config(tmp_path)),
+    ]))
+
+
+def test_review_layout_prefers_flags_then_file_names_then_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.chdir(tmp_path)
+
+    unnamed = _review_settings(tmp_path, "movie.ass")
+    named = _review_settings(tmp_path, "movie.source.ass")
+    flagged = _review_settings(
+        tmp_path, "movie.source.ass", "--output-mode", "bilingual"
+    )
+    assert (unnamed.output_mode, named.output_mode, flagged.output_mode) == (
+        "translated", "source", "bilingual",
+    )
+
+    pair = _review_settings(tmp_path, "movie.en-fr.ass")
+    assert (pair.output_mode, pair.source_language, pair.target_language) == (
+        "bilingual", "en", "fr",
+    )
+    overridden = _review_settings(tmp_path, "movie.en-fr.ass", "-t", "de")
+    assert (overridden.source_language, overridden.target_language) == ("en", "de")
+    # The configured target language picks the split of an ambiguous pair.
+    ambiguous = _review_settings(tmp_path, "movie.ko-zh-cn.ass")
+    assert (ambiguous.source_language, ambiguous.target_language) == ("ko", "zh-CN")
+
+
+def test_review_takes_the_three_files_of_an_all_output_together(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.chdir(tmp_path)
+    files = ("movie.source.ass", "movie.translated.ass", "movie.ko-zh-cn.ass")
+
+    settings = _review_settings(tmp_path, *files)
+
+    assert (settings.output_mode, settings.source_language) == ("all", "ko")
+    assert _review_settings(tmp_path, *files, "--output-mode", "all").output_mode == "all"
+    for argv, error in (
+        (("movie.source.ass", "--output-mode", "all"), "reviewed as one set"),
+        (files[:2], "only as one 'all' output"),
+        ((*files[:2], "other.ko-zh-cn.ass"), "only as one 'all' output"),
+        ((*files[:2], "movie.ass"), "only as one 'all' output"),
+        ((*files[:2], "movie.source.ass"), "only as one 'all' output"),
+        ((*files, "--output-mode", "bilingual"), "reviews a single file"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            _review_settings(tmp_path, *argv)
+
+
+def _review_subtitle(tmp_path: Path) -> Path:
+    original = tmp_path / "subs" / "movie.ja-zh-cn.ass"
+    original.parent.mkdir()
+    original.write_text(
+        "[Script Info]\nTitle: kept\n\n[Events]\n"
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\i1}你好\\Nこんにちは\n",
+        encoding="utf-8",
+    )
+    return original
+
+
+def test_review_refuses_to_start_without_a_terminal(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    original = _review_subtitle(tmp_path)
+    work_dir = tmp_path / "work"
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("review should not have started")
+
+    monkeypatch.setattr(cli, "run_review_doctor", unexpected)
+    monkeypatch.setattr(
+        cli,
+        "sys",
+        SimpleNamespace(stdin=io.StringIO(), stdout=TTY(), stderr=sys.stderr),
+    )
+
+    assert cli.main([
+        "review", str(original), "-c", "agent.backend=codex",
+        "--work-dir", str(work_dir),
+    ]) == 2
+    assert "review needs an interactive terminal" in capsys.readouterr().err
+    assert not work_dir.exists()
+
+
+class _FakeDisplay:
+    async def close(self) -> None:
+        return None
+
+
+def _fake_review_agent(monkeypatch, edit: tuple[str, str]) -> list[dict]:
+    """Stand in for the interactive Agent: record the call, edit the file."""
+    calls: list[dict] = []
+
+    async def start_display(settings, work_dir, outputs):
+        return _FakeDisplay()
+
+    async def review(settings, work_dir, outputs, **kwargs):
+        calls.append({"settings": settings, "outputs": list(outputs), **kwargs})
+        text = outputs[0].read_text(encoding="utf-8")
+        outputs[0].write_text(text.replace(*edit), encoding="utf-8")
+        return ProcessResult(("agent",), 0, "", "")
+
+    monkeypatch.setattr(cli, "start_agent_file_display", start_display)
+    monkeypatch.setattr(cli, "run_interactive_agent", review)
+    monkeypatch.setattr(
+        cli,
+        "sys",
+        SimpleNamespace(stdin=TTY(), stdout=TTY(), stderr=sys.stderr),
+    )
+    return calls
+
+
+def test_review_runs_the_review_only_agent_and_writes_back(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    original = _review_subtitle(tmp_path)
+    media = tmp_path / "movie.mkv"
+    media.write_bytes(b"media")
+    expected = original.read_text(encoding="utf-8").replace("你好", "您好")
+    doctored: list[Settings] = []
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("review does not need the transcription checks")
+
+    monkeypatch.setattr(cli, "run_doctor", unexpected)
+    monkeypatch.setattr(
+        cli, "run_review_doctor", lambda settings: doctored.append(settings) or []
+    )
+    calls = _fake_review_agent(monkeypatch, ("你好", "您好"))
+
+    assert cli.main([
+        "review", str(original), "--media", str(media),
+        "-c", "agent.final.backend=codex", "-t", "zh-CN",
+        "--work-dir", str(tmp_path / "work"),
+    ]) == 0
+
+    assert len(doctored) == 1
+    [call] = calls
+    assert call["review_only"] is True
+    assert call["settings"].output_mode == "bilingual"
+    assert (call["settings"].source_language, call["settings"].target_language) == (
+        "ja", "zh-CN",
+    )
+    assert original.read_text(encoding="utf-8") == expected
+    assert capsys.readouterr().out.startswith(f"{original}\n")
+
+
+def test_resuming_a_review_only_job_skips_the_tui_and_the_pipeline_checks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    original = _review_subtitle(tmp_path)
+    expected = original.read_text(encoding="utf-8").replace("你好", "您好")
+    job = YakiFlowJob.for_review(
+        [original],
+        make_settings(
+            target_language="zh-CN",
+            agent={"final": {"backend": "codex"}},
+            memory=tmp_path / "memory.md",
+            work_dir=tmp_path / "work",
+        ),
+    )
+    job.close()
+    doctored: list[Settings] = []
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("a review-only job has no pipeline to check or show")
+
+    monkeypatch.setattr(cli, "run_doctor", unexpected)
+    monkeypatch.setattr(tui, "run", unexpected)
+    monkeypatch.setattr(
+        cli, "run_review_doctor", lambda settings: doctored.append(settings) or []
+    )
+    calls = _fake_review_agent(monkeypatch, ("你好", "您好"))
+
+    assert cli.main(["resume", str(tmp_path / "work")]) == 0
+
+    assert len(doctored) == 1
+    assert [call["review_only"] for call in calls] == [True]
+    assert original.read_text(encoding="utf-8") == expected
