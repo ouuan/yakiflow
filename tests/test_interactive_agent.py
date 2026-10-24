@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -515,6 +516,19 @@ def test_interactive_commands_append_final_extra_options() -> None:
         ),
         "claude prompt",
     )
+    gemini = build_interactive_command(
+        make_settings(
+            agent={
+                "final": {
+                    "backend": "gemini",
+                    "model": "final-gemini",
+                    "effort": "high",
+                    "extra_options": ["--approval-mode", "auto_edit"],
+                },
+            },
+        ),
+        "gemini prompt",
+    )
 
     assert codex == [
         "codex",
@@ -537,6 +551,17 @@ def test_interactive_commands_append_final_extra_options() -> None:
         "--permission-mode",
         "plan",
         "claude prompt",
+    ]
+    # Gemini CLI has no effort option, and a positional prompt would not say
+    # whether the session stays interactive afterwards.
+    assert gemini == [
+        "gemini",
+        "--model",
+        "final-gemini",
+        "--approval-mode",
+        "auto_edit",
+        "--prompt-interactive",
+        "gemini prompt",
     ]
 
 
@@ -563,7 +588,7 @@ def test_interactive_agent_auto_opens_video_before_runner(
     monkeypatch.setattr(interactive_agent, "open_media", fake_open_media)
 
     class Runner:
-        async def run_interactive(self, command, *, cwd=None):
+        async def run_interactive(self, command, *, cwd=None, env=None):
             assert calls == [
                 (Settings().review.video_open_command, media, subtitle, tmp_path)
             ]
@@ -599,7 +624,7 @@ def test_interactive_agent_does_not_auto_open_video_by_default(
     monkeypatch.setattr(interactive_agent, "open_media", fake_open_media)
 
     class Runner:
-        async def run_interactive(self, command, *, cwd=None):
+        async def run_interactive(self, command, *, cwd=None, env=None):
             return ProcessResult(tuple(command), 0, "", "")
 
     asyncio.run(
@@ -614,6 +639,104 @@ def test_interactive_agent_does_not_auto_open_video_by_default(
     assert not opened
 
 
+def test_gemini_review_reads_its_thinking_level_from_the_work_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TMUX", "test")
+    monkeypatch.setattr(interactive_agent, "_source_media", lambda _work_dir: None)
+    staged: list[str] = []
+    envs: list[object] = []
+    settings_file = tmp_path / ".gemini" / "settings.json"
+
+    class Runner:
+        async def run_interactive(self, command, *, cwd=None, env=None):
+            staged.append(settings_file.read_text(encoding="utf-8"))
+            envs.append(env)
+            return ProcessResult(tuple(command), 0, "", "")
+
+    for backend, effort in (("gemini", "minimal"), ("gemini", "xhigh")):
+        asyncio.run(
+            interactive_agent.run_interactive_agent(
+                make_settings(
+                    agent={"final": {"backend": backend, "effort": effort}}
+                ).resolved(),
+                tmp_path,
+                [tmp_path / "movie.ass"],
+                runner=Runner(),
+            )
+        )
+
+    thinking = [
+        json.loads(text)["modelConfigs"]["customOverrides"][0]["modelConfig"][
+            "generateContentConfig"
+        ]["thinkingConfig"]["thinkingLevel"]
+        for text in staged
+    ]
+    # A resumed review with another effort replaces the earlier level.
+    assert thinking == ["MINIMAL", "XHIGH"]
+    # Trust has to come with the process: settings load before arguments.
+    assert envs == [{"GEMINI_CLI_TRUST_WORKSPACE": "true"}] * 2
+
+
+def test_new_tmux_review_session_sets_the_agent_environment_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(interactive_agent, "_source_media", lambda _work_dir: None)
+    calls: list[tuple[object, ...]] = []
+
+    class Process:
+        returncode = 0
+
+        async def wait(self) -> None:
+            return None
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls.append(args)
+        if args[:2] == ("tmux", "attach-session"):
+            (tmp_path / ".agent-display-status").write_text("0")
+        return Process()
+
+    monkeypatch.setattr(
+        interactive_agent.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+
+    asyncio.run(
+        interactive_agent.run_interactive_agent(
+            make_settings(agent={"final": {"backend": "gemini"}}).resolved(),
+            tmp_path,
+            [tmp_path / "movie.ass"],
+        )
+    )
+
+    new_session = next(args for args in calls if args[:2] == ("tmux", "new-session"))
+    # A session on a running tmux server inherits the server's environment,
+    # so the variable has to be part of the Agent's own command line.
+    assert str(new_session[-1]).startswith("GEMINI_CLI_TRUST_WORKSPACE=true gemini ")
+
+
+def test_other_review_backends_leave_no_gemini_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TMUX", "test")
+    monkeypatch.setattr(interactive_agent, "_source_media", lambda _work_dir: None)
+
+    class Runner:
+        async def run_interactive(self, command, *, cwd=None, env=None):
+            return ProcessResult(tuple(command), 0, "", "")
+
+    asyncio.run(
+        interactive_agent.run_interactive_agent(
+            make_settings(agent={"final": {"backend": "claude"}}).resolved(),
+            tmp_path,
+            [tmp_path / "movie.ass"],
+            runner=Runner(),
+        )
+    )
+
+    assert not (tmp_path / ".gemini").exists()
+
+
 def test_interactive_agent_forwards_previous_problems_into_the_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -623,7 +746,7 @@ def test_interactive_agent_forwards_previous_problems_into_the_prompt(
     prompts: list[str] = []
 
     class Runner:
-        async def run_interactive(self, command, *, cwd=None):
+        async def run_interactive(self, command, *, cwd=None, env=None):
             prompts.append(command[-1])
             return ProcessResult(tuple(command), 0, "", "")
 

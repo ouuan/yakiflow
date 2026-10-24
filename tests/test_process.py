@@ -51,6 +51,21 @@ def test_command_runner_awaits_custom_line_callback_awaitable() -> None:
     assert awaited == [True]
 
 
+def test_command_runner_env_adds_to_the_inherited_environment(monkeypatch) -> None:
+    monkeypatch.setenv("YAKIFLOW_INHERITED", "kept")
+    result = asyncio.run(
+        CommandRunner().run(
+            [
+                sys.executable, "-c",
+                "import os; print(os.environ['YAKIFLOW_INHERITED'], os.environ['YAKIFLOW_ADDED'])",
+            ],
+            env={"YAKIFLOW_ADDED": "added"},
+        )
+    )
+
+    assert result.stdout == "kept added\n"
+
+
 def test_command_runner_terminates_child_when_line_callback_fails() -> None:
     async def on_line(_stream: str, _line: str) -> None:
         raise RuntimeError("log sink failed")

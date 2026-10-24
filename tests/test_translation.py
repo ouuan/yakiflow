@@ -7,14 +7,16 @@ import pytest
 from conftest import make_settings
 from yakiflow.database import JobDatabase
 from yakiflow.models import AgentTraceEvent, Cue
-from yakiflow.process import ProcessResult
+from yakiflow.process import ProcessError, ProcessResult
 from yakiflow.translation import (
     AgentBackend,
     ClaudeBackend,
     CodexBackend,
+    GeminiBackend,
     TranslationPipeline,
     claude_trace_events,
     codex_trace_events,
+    gemini_trace_events,
 )
 
 
@@ -279,6 +281,261 @@ def test_draft_backend_commands_append_only_matching_options(tmp_path: Path) -> 
     assert "service_tier=fast" not in claude
     # The staged system prompt is written for the call and cleaned up after it.
     assert not list(tmp_path.glob("agent-system-*.md"))
+
+
+def test_gemini_trace_adapter_normalizes_tools_and_errors() -> None:
+    started = gemini_trace_events({
+        "type": "tool_use",
+        "tool_name": "read_file",
+        "tool_id": "tool-1",
+        "parameters": {"file_path": "memory.md"},
+    })
+    completed = gemini_trace_events({
+        "type": "tool_result", "tool_id": "tool-1", "status": "success",
+        "output": "## Names",
+    })
+    failed = gemini_trace_events({
+        "type": "tool_result", "tool_id": "tool-2", "status": "error",
+        "error": {"type": "FILE_NOT_FOUND", "message": "no such file"},
+    })
+    warning = gemini_trace_events({
+        "type": "error", "severity": "warning", "message": "Loop detected",
+    })
+    fatal = gemini_trace_events({
+        "type": "result", "status": "error",
+        "error": {"type": "Error", "message": "quota exhausted"},
+    })
+
+    assert [(e.kind, e.message, e.event_id, e.detail) for e in started] == [
+        ("tool_start", "Call read_file", "tool-1", "file_path: memory.md"),
+    ]
+    assert [(e.kind, e.detail) for e in completed] == [("tool_result", "## Names")]
+    assert [(e.message, e.detail) for e in failed] == [("Tool error", "no such file")]
+    assert [(e.kind, e.message) for e in warning] == [("warning", "Loop detected")]
+    assert [(e.kind, e.message) for e in fatal] == [("error", "quota exhausted")]
+    # A rejected reply's result names no reason; its error event already did.
+    assert gemini_trace_events({"type": "result", "status": "error"}) == []
+    assert gemini_trace_events({"type": "result", "status": "success"}) == []
+    assert gemini_trace_events({"type": "message", "role": "assistant"}) == []
+
+
+def test_gemini_backend_assembles_the_streamed_answer(tmp_path: Path) -> None:
+    schema = {"type": "object", "required": ["cues"]}
+    expected = {"cues": [{"id": "c1", "source": "hello", "translated": "你好"}]}
+    seen: dict[str, object] = {}
+
+    class GeminiRunner:
+        async def run(self, args, *, on_line=None, **kwargs):
+            seen["args"] = list(args)
+            seen["stdin"] = kwargs.get("stdin")
+            seen["check"] = kwargs.get("check")
+            seen["env"] = kwargs["env"]
+            seen["cwd"] = cwd = kwargs["cwd"]
+            seen["system"] = Path(kwargs["env"]["GEMINI_SYSTEM_MD"]).read_text(encoding="utf-8")
+            policy = args[args.index("--policy") + 1]
+            seen["policy"] = (cwd / policy).read_text(encoding="utf-8")
+            seen["settings"] = json.loads((cwd / ".gemini" / "settings.json").read_text())
+            assert on_line is not None
+            text = json.dumps(expected, ensure_ascii=False)
+            for line in (
+                {"type": "init", "model": "flash"},
+                {"type": "message", "role": "user", "content": "prompt"},
+                {"type": "message", "role": "assistant", "content": "Let me check. ", "delta": True},
+                {"type": "tool_use", "tool_name": "glob", "tool_id": "t1", "parameters": {}},
+                {"type": "tool_result", "tool_id": "t1", "status": "success"},
+                {"type": "message", "role": "assistant", "content": text[:10], "delta": True},
+                {"type": "message", "role": "assistant", "content": text[10:], "delta": True},
+                {"type": "result", "status": "success", "stats": {}},
+            ):
+                await on_line("stdout", json.dumps(line, ensure_ascii=False))
+            await on_line("stderr", "Attempt 1 failed with status 503")
+            return ProcessResult(tuple(str(arg) for arg in args), 0, "", "")
+
+    events = []
+
+    async def exercise():
+        return await GeminiBackend(
+            tmp_path, GeminiRunner(), ("--approval-mode", "plan")
+        ).invoke_with_trace(
+            "prompt", system="stable guidance", model="flash", effort="low",
+            schema=schema,
+            on_event=lambda event: RecordingAwaitable(events, event),
+        )
+
+    assert asyncio.run(exercise()) == expected
+    args = seen["args"]
+    assert args == [
+        "gemini", "--prompt", "", "--output-format", "stream-json",
+        "--model", "flash", "--policy", "no-tools.toml",
+        "--approval-mode", "plan",
+    ]
+    # The effort picks the working directory, whose settings carry its level.
+    assert seen["cwd"] == tmp_path / "agent-gemini-low"
+    override = seen["settings"]["modelConfigs"]["customOverrides"][0]
+    assert override["match"] == {"model": "chat-base-3", "overrideScope": "core"}
+    assert override["modelConfig"]["generateContentConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "LOW"
+    }
+    # Settings load before arguments are parsed, so trust comes from the
+    # environment rather than `--skip-trust`.
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["GEMINI_CLI_TRUST_WORKSPACE"] == "true"
+    assert seen["stdin"] == b"prompt"
+    assert seen["check"] is False
+    # Without a schema option, the schema becomes part of the stable guidance.
+    system = seen["system"]
+    assert isinstance(system, str)
+    assert system.startswith("stable guidance\n")
+    assert json.dumps(schema) in system
+    assert 'toolName = "*"' in seen["policy"] and 'decision = "deny"' in seen["policy"]
+    # Commentary before a tool call is shown, never parsed as the answer.
+    assert [(event.kind, event.message) for event in events] == [
+        ("agent_message", "Let me check."),
+        ("tool_start", "Call glob"),
+        ("tool_result", "Tool result"),
+    ]
+
+
+def test_gemini_backend_shares_one_directory_and_prompt_file_per_level(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[Path, str]] = []
+
+    class Runner:
+        async def run(self, args, *, on_line=None, **kwargs):
+            calls.append((kwargs["cwd"], kwargs["env"]["GEMINI_SYSTEM_MD"]))
+            assert on_line is not None
+            await on_line("stdout", json.dumps(
+                {"type": "message", "role": "assistant", "content": '{"cues": []}'}
+            ))
+            return ProcessResult(tuple(str(arg) for arg in args), 0, "", "")
+
+    async def exercise() -> None:
+        backend = GeminiBackend(tmp_path, Runner())
+        for system, effort in (
+            ("stage guidance", "high"),
+            ("stage guidance", "xhigh"),
+            ("other guidance", "high"),
+            ("stage guidance", "minimal"),
+        ):
+            await backend.invoke_with_trace(
+                "cues", system=system, model="pro", effort=effort,
+                schema={"type": "object"},
+            )
+
+    asyncio.run(exercise())
+
+    high = tmp_path / "agent-gemini-high"
+    # Every effort gets its own directory; one effort's batches share it.
+    assert [cwd for cwd, _ in calls] == [
+        high, tmp_path / "agent-gemini-xhigh", high,
+        tmp_path / "agent-gemini-minimal",
+    ]
+    # One prompt file serves every batch with that guidance, whatever the
+    # effort; other guidance gets its own.
+    assert calls[0][1] == calls[1][1] == calls[3][1] != calls[2][1]
+    assert Path(calls[0][1]).parent == tmp_path / "agent-gemini-prompts"
+    settings = json.loads((high / ".gemini" / "settings.json").read_text())
+    thinking = settings["modelConfigs"]["customOverrides"][0]["modelConfig"][
+        "generateContentConfig"
+    ]["thinkingConfig"]
+    assert thinking == {"thinkingLevel": "HIGH"}
+    # Only fixed files sit where Gemini lists the directory ahead of the cues.
+    assert sorted(path.name for path in high.iterdir()) == [".gemini", "no-tools.toml"]
+    # The effort is passed through as given, even beyond Gemini's own levels.
+    xhigh = json.loads(
+        (tmp_path / "agent-gemini-xhigh" / ".gemini" / "settings.json").read_text()
+    )
+    assert xhigh["modelConfigs"]["customOverrides"][0]["modelConfig"][
+        "generateContentConfig"
+    ]["thinkingConfig"] == {"thinkingLevel": "XHIGH"}
+
+
+def _gemini_runner(*lines: dict, returncode: int = 0):
+    class Runner:
+        async def run(self, args, *, on_line=None, **kwargs):
+            assert on_line is not None
+            for line in lines:
+                await on_line("stdout", json.dumps(line, ensure_ascii=False))
+            return ProcessResult(tuple(str(arg) for arg in args), returncode, "", "")
+
+    return Runner()
+
+
+def _assistant(text: str) -> dict:
+    return {"type": "message", "role": "assistant", "content": text, "delta": True}
+
+
+def test_gemini_backend_keeps_the_answer_after_a_silent_retry(tmp_path: Path) -> None:
+    expected = {"cues": [{"id": "c1", "source": "hello", "translated": "你好"}]}
+    answer = json.dumps(expected, ensure_ascii=False)
+    # The first attempt streamed part of a reply before Gemini CLI retried it,
+    # and nothing in the output marks where the retry began.
+    runner = _gemini_runner(
+        _assistant("```json\n" + answer[:25]),
+        _assistant("```json\n" + answer[:25]),
+        _assistant(answer[25:] + "\n```"),
+        {"type": "result", "status": "success"},
+    )
+
+    result = asyncio.run(GeminiBackend(tmp_path, runner).invoke_with_trace(
+        "prompt", model="flash", effort="low", schema={"type": "object"},
+    ))
+
+    assert result == expected
+
+
+def test_gemini_backend_names_the_reason_for_a_rejected_reply(tmp_path: Path) -> None:
+    runner = _gemini_runner(
+        _assistant('{"cues": ['),
+        {"type": "error", "severity": "error",
+         "message": "Response truncated due to token limits."},
+        {"type": "result", "status": "error"},
+        returncode=1,
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Gemini CLI failed: Response truncated due to token limits."
+    ):
+        asyncio.run(GeminiBackend(tmp_path, runner).invoke_with_trace(
+            "prompt", model="flash", effort="low", schema={"type": "object"},
+        ))
+
+
+def test_gemini_backend_reports_the_cli_failure_message(tmp_path: Path) -> None:
+    class FailingRunner:
+        async def run(self, args, *, on_line=None, **kwargs):
+            assert on_line is not None
+            await on_line("stdout", json.dumps({
+                "type": "result", "status": "error",
+                "error": {"type": "Error", "message": "No available Gemini accounts"},
+            }))
+            return ProcessResult(
+                tuple(str(arg) for arg in args), 1, "", "    at retryWithBackoff",
+            )
+
+    async def exercise():
+        await GeminiBackend(tmp_path, FailingRunner()).invoke_with_trace(
+            "prompt", model="flash", effort="low", schema={"type": "object"},
+        )
+
+    with pytest.raises(RuntimeError, match="Gemini CLI failed: No available Gemini accounts"):
+        asyncio.run(exercise())
+
+
+def test_gemini_backend_raises_the_process_error_without_a_report(tmp_path: Path) -> None:
+    class CrashingRunner:
+        async def run(self, args, **kwargs):
+            return ProcessResult(tuple(str(arg) for arg in args), 42, "", "Unknown argument: policy")
+
+    async def exercise():
+        await GeminiBackend(tmp_path, CrashingRunner()).invoke_with_trace(
+            "prompt", model="flash", effort="low", schema={"type": "object"},
+        )
+
+    with pytest.raises(ProcessError, match="Unknown argument: policy"):
+        asyncio.run(exercise())
 
 
 def test_pipeline_emits_agent_lifecycle_and_readable_result(tmp_path: Path) -> None:

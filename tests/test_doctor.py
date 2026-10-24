@@ -177,6 +177,67 @@ def test_external_whisper_server_is_not_checked_for_a_local_model(
     assert all(check.name != "whisper model" for check in checks)
 
 
+def test_gemini_cli_is_found_without_a_sign_in_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    model = _stub_dependencies(tmp_path, monkeypatch)
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(doctor_module.subprocess, "run", run)
+
+    checks = run_doctor(
+        make_settings(
+            whisper={"model": model}, agent={"backend": "gemini"}
+        ).resolved()
+    )
+    mapped = {check.name: check for check in checks}
+
+    assert mapped["gemini CLI"].ok
+    assert mapped["gemini CLI"].detail == "/bin/gemini (sign-in not checked)"
+    assert "gemini auth" not in mapped
+    assert not any(command[0] == "gemini" for command in commands)
+
+
+def test_doctor_without_an_agent_backend_checks_every_agent_cli(
+    tmp_path: Path, monkeypatch
+) -> None:
+    model = _stub_dependencies(tmp_path, monkeypatch)
+
+    checks = run_doctor(make_settings(whisper={"model": model}).resolved())
+    names = {check.name for check in checks}
+
+    assert {"codex auth", "claude auth", "gemini CLI"} <= names
+
+
+def test_agent_clis_are_advisory_until_a_backend_is_chosen(
+    tmp_path: Path, monkeypatch
+) -> None:
+    model = _stub_dependencies(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        doctor_module.shutil,
+        "which",
+        lambda command: None if command == "gemini" else f"/bin/{command}",
+    )
+
+    unchosen = {
+        check.name: check
+        for check in run_doctor(make_settings(whisper={"model": model}).resolved())
+    }
+    chosen = {
+        check.name: check
+        for check in run_doctor(
+            make_settings(whisper={"model": model}, agent={"backend": "gemini"}).resolved()
+        )
+    }
+
+    assert not unchosen["gemini CLI"].ok and not unchosen["gemini CLI"].fatal
+    assert not chosen["gemini CLI"].ok and chosen["gemini CLI"].fatal
+
+
 def test_review_display_dependencies_are_advisory(
     tmp_path: Path, monkeypatch
 ) -> None:

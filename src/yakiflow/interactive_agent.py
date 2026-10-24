@@ -16,13 +16,14 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .config import Settings
 from .database import JobDatabase
 from .media_player import open_media
 from .models import OutputMode
 from .process import CommandRunner, ProcessError, ProcessResult
+from .translation import write_gemini_settings
 
 
 class AgentFileDisplay:
@@ -400,7 +401,31 @@ def build_interactive_command(settings: Settings, prompt: str) -> list[str]:
         command.extend(extra_options)
         command.append(prompt)
         return command
+    if final.backend == "gemini":
+        # The thinking level comes from the workspace settings that
+        # stage_interactive_workspace writes, not from an option.
+        command = ["gemini"]
+        if model:
+            command.extend(("--model", model))
+        command.extend(extra_options)
+        command.extend(("--prompt-interactive", prompt))
+        return command
     raise ValueError(f"unsupported agent backend: {final.backend}")
+
+
+def stage_interactive_workspace(settings: Settings, work_dir: Path) -> dict[str, str]:
+    """Write what the configured Agent CLI reads from the work directory.
+
+    Returns the variables to add to the Agent's environment.
+    """
+    final = settings.agent.final
+    if final.backend == "gemini":
+        write_gemini_settings(work_dir, final.effort or "high")
+        # With folder trust enabled, Gemini CLI ignores an untrusted
+        # directory's settings, and every job's work directory is new.
+        # `--skip-trust` would come too late: settings load before arguments.
+        return {"GEMINI_CLI_TRUST_WORKSPACE": "true"}
+    return {}
 
 
 def build_memory_conflict_prompt(
@@ -439,7 +464,8 @@ async def run_memory_conflict_agent(
     runner = runner or CommandRunner()
     prompt = build_memory_conflict_prompt(work_dir, destination, diff)
     command = build_interactive_command(settings, prompt)
-    return await runner.run_interactive(command, cwd=work_dir)
+    env = stage_interactive_workspace(settings, work_dir)
+    return await runner.run_interactive(command, cwd=work_dir, env=env)
 
 
 async def run_interactive_agent(
@@ -457,6 +483,7 @@ async def run_interactive_agent(
         settings, work_dir, outputs, context_files, previous_problems
     )
     command = build_interactive_command(settings, prompt)
+    env = stage_interactive_workspace(settings, work_dir)
     if settings.review.auto_open_video and outputs:
         open_media(
             settings.review.video_open_command,
@@ -471,8 +498,9 @@ async def run_interactive_agent(
         return await _run_in_new_tmux_session(
             command, work_dir, outputs, _source_media(work_dir),
             settings.review.video_open_command, settings.diarization_enabled,
+            env,
         )
-    return await runner.run_interactive(command, cwd=work_dir)
+    return await runner.run_interactive(command, cwd=work_dir, env=env)
 
 
 async def _run_in_new_tmux_session(
@@ -482,6 +510,7 @@ async def _run_in_new_tmux_session(
     media_path: Path | None = None,
     video_open_command: str | None = None,
     show_speaker: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> ProcessResult:
     """Run Agent and preview in a tmux session created by YakiFlow itself."""
     session = f"yakiflow-review-{uuid.uuid4().hex[:8]}"
@@ -493,8 +522,13 @@ async def _run_in_new_tmux_session(
     preview = _preview_command(
         file_path, marker, media_path, video_open_command, show_speaker
     )
+    # The session gets the tmux server's environment, not this process's, so
+    # the Agent's own variables are set in its command line.
+    assignments = "".join(
+        f"{name}={shlex.quote(value)} " for name, value in (env or {}).items()
+    )
     wrapped_agent = (
-        f"{shlex.join(command)}; status=$?; "
+        f"{assignments}{shlex.join(command)}; status=$?; "
         f"printf '%s' \"$status\" > {shlex.quote(str(status_file))}; "
         f"touch {shlex.quote(str(marker))}; "
         f"tmux kill-session -t {shlex.quote(session)}; exit \"$status\""
@@ -509,7 +543,9 @@ async def _run_in_new_tmux_session(
         )
         await created.wait()
         if created.returncode:
-            return await CommandRunner().run_interactive(command, cwd=work_dir)
+            return await CommandRunner().run_interactive(
+                command, cwd=work_dir, env=env
+            )
         split_args = _split_window_args()
         split = await asyncio.create_subprocess_exec(
             *split_args, "-t", session, "-c", str(work_dir),
@@ -524,7 +560,9 @@ async def _run_in_new_tmux_session(
         )
         await attached.wait()
     except OSError:
-        return await CommandRunner().run_interactive(command, cwd=work_dir)
+        return await CommandRunner().run_interactive(
+            command, cwd=work_dir, env=env
+        )
     try:
         returncode = int(status_file.read_text(encoding="utf-8") or "1")
     except (OSError, ValueError):

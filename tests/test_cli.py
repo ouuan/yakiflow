@@ -337,7 +337,7 @@ def test_memory_conflict_agent_retries_when_destination_changes_again(
         def __init__(self) -> None:
             self.prompts: list[str] = []
 
-        async def run_interactive(self, args, *, cwd=None, check=True):
+        async def run_interactive(self, args, *, cwd=None, check=True, env=None):
             assert cwd == work_dir.resolve()
             prompt = str(args[-1])
             self.prompts.append(prompt)

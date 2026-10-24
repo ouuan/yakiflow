@@ -3,8 +3,9 @@
 简体中文 | [English](README.md)
 
 YakiFlow 为本地视频、音频、网页视频和直播生成 ASS 字幕，支持原文、译文和
-双语输出。你可以使用本地或云端转录，通过 Codex 或 Claude Code 翻译，并在
-保存前与 Agent 一起审校。支持说话人识别的后端还能标注说话人并保留同时发言。
+双语输出。你可以使用本地或云端转录，通过 Codex、Claude Code 或 Gemini CLI
+翻译，并在保存前与 Agent 一起审校。支持说话人识别的后端还能标注说话人并保留
+同时发言。
 
 任务中断后可以续跑，无需从头开始。
 
@@ -16,7 +17,7 @@ YakiFlow 为本地视频、音频、网页视频和直播生成 ASS 字幕，支
 
 - Python 3.12 或更高版本；
 - `ffmpeg`，以及随它一起安装的 `ffprobe`；
-- `codex` 或 `claude` CLI，二选一安装并登录；
+- `codex`、`claude` 或 `gemini` CLI，任选其一安装并登录；
 - 使用默认的本地转录时，还需要较新版本的
   [whisper.cpp](https://github.com/ggml-org/whisper.cpp)，且能在 `PATH` 中找到
   `whisper-cli`。
@@ -56,8 +57,8 @@ output-mode = "bilingual"
 backend = "codex"
 ```
 
-如果使用 Claude Code，把后端改为 `backend = "claude"`。也可以不创建配置文件，
-每次运行时都传入对应参数。
+如果使用 Claude Code，把后端改为 `backend = "claude"`；使用 Gemini CLI 则改为
+`backend = "gemini"`。也可以不创建配置文件，每次运行时都传入对应参数。
 
 ### 4. 下载默认模型并检查环境
 
@@ -66,10 +67,11 @@ yakiflow models fetch
 yakiflow doctor -c agent.backend=codex
 ```
 
-使用 Claude Code 时把 `codex` 换成 `claude`。请修复所有与当前输入有关的
-`FAIL`；`yt-dlp` 只影响 URL，whisper.cpp 相关检查只影响 Whisper 后端。
-云端转录后端不需要 `models fetch`。`WARN` 表示缺少可选工具，例如用于分屏
-审校的 `tmux`。
+使用 Claude Code 或 Gemini CLI 时把 `codex` 换成 `claude` 或 `gemini`。请修复
+所有与当前输入有关的 `FAIL`；`yt-dlp` 只影响 URL，whisper.cpp 相关检查只影响
+Whisper 后端。云端转录后端不需要 `models fetch`。`WARN` 表示缺少可选工具，
+例如用于分屏审校的 `tmux`。`doctor` 无法判断 Gemini CLI 是否已登录，请在第一次
+运行任务前先运行一次 `gemini` 并完成登录。
 
 `run` 和 `resume` 启动时也会检查环境。确认检查不适用时，可以加上
 `--skip-health-check` 跳过。
@@ -372,7 +374,7 @@ output-dir = "./subtitles"
 # memory = "./memory.md"  # 在这些任务之间共享术语与风格偏好
 
 [agent]
-backend = "codex"        # 或 claude
+backend = "codex"        # 或 claude、gemini
 
 [agent.draft]
 effort = "high"
@@ -511,16 +513,16 @@ Agent 的额外参数同样可通过 `agent.extra-options` 或各阶段的 `extr
 
 | 表内的键 | 默认值 / 继承规则 | 含义 / 可选值 |
 | --- | --- | --- |
-| `backend` | `[agent]` 未设置；三个阶段均继承它 | `codex` 或 `claude`。当前翻译阶段（draft 或 stream）和 final 均必填，可共享设置或按阶段指定。 |
+| `backend` | `[agent]` 未设置；三个阶段均继承它 | `codex`、`claude` 或 `gemini`。当前翻译阶段（draft 或 stream）和 final 均必填，可共享设置或按阶段指定。 |
 | `model` | `[agent]` 未设置；三个阶段均继承它，再使用下表中的阶段默认值 | Agent 模型名称。 |
 | `effort` | `[agent]` 未设置；三个阶段均继承它，再使用下表中的阶段默认值 | `minimal`、`low`、`medium`、`high` 或 `xhigh`。 |
 | `extra-options` | `[agent]` 未设置；三个阶段均继承它，否则为 `[]` | Agent CLI 额外参数的字符串数组；显式设置 `[]` 清除继承的参数。 |
 
-| 阶段 | 默认 Codex 模型 | 默认 Claude 模型 | 默认 effort |
-| --- | --- | --- | --- |
-| `agent.draft` | `gpt-6-luna` | `sonnet` | `medium` |
-| `agent.stream` | `gpt-6-luna` | `sonnet` | `low` |
-| `agent.final` | `gpt-6.1-sol` | `opus` | `medium` |
+| 阶段 | 默认 Codex 模型 | 默认 Claude 模型 | 默认 Gemini 模型 | 默认 effort |
+| --- | --- | --- | --- | --- |
+| `agent.draft` | `gpt-6-luna` | `sonnet` | `flash` | `medium` |
+| `agent.stream` | `gpt-6-luna` | `sonnet` | `flash` | `low` |
+| `agent.final` | `gpt-6.1-sol` | `opus` | `pro` | `medium` |
 
 各阶段独立解析共享项，优先级为：阶段设置 → `[agent]` → 阶段内置默认值。
 `[agent.stream]` 不从 `[agent.draft]` 继承，调优选项使用下表中的 stream 默认值。

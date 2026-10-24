@@ -6,7 +6,7 @@ import os
 import signal
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Sequence
+from typing import Awaitable, Callable, Mapping, Sequence
 
 
 LineCallback = Callable[[str, str], Awaitable[None] | None]
@@ -37,11 +37,14 @@ class CommandRunner:
         on_line: LineCallback | None = None,
         check: bool = True,
         stdin: bytes | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> ProcessResult:
+        """Run ``args``; ``env`` adds variables to the inherited environment."""
         normalized = tuple(os.fspath(arg) for arg in args)
         process = await asyncio.create_subprocess_exec(
             *normalized,
             cwd=cwd,
+            env={**os.environ, **env} if env else None,
             stdin=asyncio.subprocess.PIPE if stdin is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -157,6 +160,7 @@ class CommandRunner:
         *,
         cwd: Path | None = None,
         check: bool = True,
+        env: Mapping[str, str] | None = None,
     ) -> ProcessResult:
         """Run a command with the caller's terminal attached.
 
@@ -171,6 +175,7 @@ class CommandRunner:
         process = await asyncio.create_subprocess_exec(
             *normalized,
             cwd=cwd,
+            env={**os.environ, **env} if env else None,
             stdin=None,
             stdout=None,
             stderr=None,

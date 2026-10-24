@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import math
@@ -16,7 +17,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Sequence
 from .config import Settings
 from .database import JobDatabase
 from .models import AgentTraceEvent, Cue, Word, cue_text_weight, word_cue_id
-from .process import CommandRunner
+from .process import CommandRunner, ProcessError
+from .subtitles import write_text_atomic
 
 if TYPE_CHECKING:
     from .word_processing import WordBatch
@@ -196,6 +198,43 @@ def claude_trace_events(data: dict[str, Any]) -> list[BackendTraceEvent]:
                 )
             )
     return events
+
+
+def gemini_trace_events(data: dict[str, Any]) -> list[BackendTraceEvent]:
+    """Convert one ``gemini --output-format stream-json`` object into display events.
+
+    Assistant text arrives in deltas, so the backend assembles it itself.
+    """
+    event_type = str(data.get("type", ""))
+    if event_type == "error":
+        kind = "warning" if data.get("severity") == "warning" else "error"
+        return [BackendTraceEvent(kind, _display_value(data.get("message")) or "Gemini error")]
+    if event_type == "result" and data.get("status") == "error":
+        error = data.get("error")
+        message = _display_value(error.get("message") if isinstance(error, dict) else error)
+        # A reply Gemini rejected as incomplete or blocked ends in a result
+        # naming no reason; the error event before it already carried one.
+        return [BackendTraceEvent("error", message)] if message else []
+    event_id = str(data["tool_id"]) if data.get("tool_id") is not None else None
+    if event_type == "tool_use":
+        name = str(data.get("tool_name") or "tool")
+        return [
+            BackendTraceEvent(
+                "tool_start", f"Call {name}", event_id,
+                _display_value(data.get("parameters")) or None,
+            )
+        ]
+    if event_type == "tool_result":
+        error = data.get("error")
+        failed = data.get("status") == "error"
+        detail = error.get("message") if failed and isinstance(error, dict) else data.get("output")
+        return [
+            BackendTraceEvent(
+                "tool_result", "Tool error" if failed else "Tool result", event_id,
+                _display_value(detail) or None,
+            )
+        ]
+    return []
 
 
 WORD_DRAFT_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -511,6 +550,211 @@ class ClaudeBackend(AgentBackend):
         raise ValueError(f"Claude stream did not contain a structured result: {result.stderr[-500:]}")
 
 
+def _parse_last_json_response(text: str) -> dict[str, Any]:
+    """Parse the answer even when an abandoned attempt's text precedes it.
+
+    Gemini CLI retries a reply it judges incomplete only once that reply has
+    streamed, and its stream-json output does not report the retry, so the
+    first attempt's partial text arrives in front of the complete answer.
+    """
+    try:
+        return parse_json_response(text)
+    except ValueError as exc:
+        error = exc
+    end = text.rfind("}")
+    for start in (index for index, char in enumerate(text) if char == "{"):
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise error
+
+
+# Denies every tool, which Gemini CLI then leaves out of the request entirely.
+_GEMINI_NO_TOOLS_POLICY = """[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999
+"""
+
+
+def _write_stable(path: Path, text: str) -> None:
+    """Make ``path`` hold ``text``, skipping the write when it already does.
+
+    Concurrent Gemini processes may read these files at any moment, so an
+    identical rewrite is skipped and any other replaces the file atomically.
+    """
+    try:
+        if path.read_text(encoding="utf-8") == text:
+            return
+    except FileNotFoundError:
+        pass
+    write_text_atomic(path, text)
+
+
+def write_gemini_settings(directory: Path, effort: str) -> None:
+    """Give Gemini CLI sessions started in ``directory`` the thinking level ``effort``.
+
+    Gemini CLI has no reasoning option on its command line: the thinking
+    level comes only from settings, and workspace settings are the one kind
+    YakiFlow can supply without touching the user's own. The override names
+    `chat-base-3`, the alias every Gemini 3 chat model extends, so whatever
+    `pro` or `flash` resolves to picks it up, while Gemini 2.5 models and the
+    CLI's internal utility calls keep their own configuration. The level is
+    passed through as given; a model that does not accept it reports an error.
+    """
+    settings = {
+        "modelConfigs": {
+            "customOverrides": [
+                {
+                    "match": {"model": "chat-base-3", "overrideScope": "core"},
+                    "modelConfig": {
+                        "generateContentConfig": {
+                            "thinkingConfig": {
+                                "thinkingLevel": effort.upper()
+                            }
+                        }
+                    },
+                }
+            ]
+        }
+    }
+    _write_stable(
+        directory / ".gemini" / "settings.json",
+        json.dumps(settings, indent=2) + "\n",
+    )
+
+
+class GeminiBackend(AgentBackend):
+    name = "gemini"
+
+    def __init__(
+        self,
+        work_dir: Path,
+        runner: CommandRunner | None = None,
+        options: Sequence[str] = (),
+    ):
+        self.work_dir = work_dir
+        self.runner = runner or CommandRunner()
+        self.options = tuple(options)
+
+    async def invoke_with_trace(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model: str,
+        effort: str,
+        schema: dict[str, Any],
+        on_event: BackendTraceCallback | None = None,
+    ) -> dict[str, Any]:
+        # Gemini CLI takes no output schema. The schema is stage-constant, so
+        # it joins the guidance in the system prompt. That prompt replaces
+        # Gemini CLI's own coding-agent instructions, which a translator has no
+        # use for, and leads every request, where a stable prefix is cacheable.
+        system = (
+            (f"{system}\n" if system else "")
+            + "Reply with exactly one JSON object and nothing else, with no "
+            "Markdown fence or commentary. It must validate against this JSON "
+            "Schema:\n"
+            + json.dumps(schema, ensure_ascii=False)
+            + "\n"
+        )
+        # The thinking level lives in workspace settings, so each effort gets
+        # its own working directory, shared by every batch at that effort.
+        # Gemini CLI records sessions per directory, and a directory per call
+        # would register a new project in the user's Gemini home each time.
+        # Only fixed files live in it, which keeps the directory listing
+        # Gemini sends ahead of the cues identical; the system prompts, named
+        # by their content, are kept beside it.
+        directory = self.work_dir / f"agent-gemini-{effort}"
+        write_gemini_settings(directory, effort)
+        # Draft translation answers from the prompt alone, and tool definitions
+        # are the largest remaining block of per-request tokens.
+        _write_stable(directory / "no-tools.toml", _GEMINI_NO_TOOLS_POLICY)
+        digest = hashlib.sha256(system.encode()).hexdigest()[:16]
+        system_path = self.work_dir / "agent-gemini-prompts" / f"system-{digest}.md"
+        _write_stable(system_path, system)
+        # Assistant text since the last tool call: only the text after the
+        # final call is the answer.
+        chunks: list[str] = []
+        reported: str | None = None
+        failure: str | None = None
+
+        async def line(stream: str, value: str) -> None:
+            nonlocal reported, failure
+            if stream != "stdout":
+                return
+            try:
+                data = json.loads(value)
+            except json.JSONDecodeError:
+                return
+            if not isinstance(data, dict):
+                return
+            event_type = data.get("type")
+            if event_type == "message" and data.get("role") == "assistant":
+                chunks.append(str(data.get("content") or ""))
+                return
+            events: list[BackendTraceEvent] = []
+            if event_type in {"tool_use", "result"}:
+                text = "".join(chunks).strip()
+                if text and not _structured_agent_message(text):
+                    events.append(BackendTraceEvent("agent_message", text))
+                if event_type == "tool_use":
+                    chunks.clear()
+            trace = gemini_trace_events(data)
+            if event_type == "error" and trace[0].kind == "error":
+                reported = trace[0].message
+            if event_type == "result" and data.get("status") == "error":
+                failure = trace[0].message if trace else reported or "no reason given"
+            events.extend(trace)
+            if on_event is not None:
+                for event in events:
+                    maybe = on_event(event)
+                    if inspect.isawaitable(maybe):
+                        await maybe
+
+        command = [
+            "gemini",
+            # The prompt arrives on stdin, ahead of this empty one.
+            "--prompt",
+            "",
+            "--output-format",
+            "stream-json",
+            "--model",
+            model,
+            # Relative to the working directory: Gemini CLI splits this value
+            # at commas, which the work directory's path may contain.
+            "--policy",
+            "no-tools.toml",
+        ]
+        command.extend(self.options)
+        result = await self.runner.run(
+            command,
+            cwd=directory,
+            stdin=prompt.encode(),
+            on_line=line,
+            check=False,
+            env={
+                "GEMINI_SYSTEM_MD": str(system_path),
+                # A user who enabled folder trust would otherwise have every
+                # batch refused in this new directory, with its settings
+                # ignored. `--skip-trust` comes too late for the settings,
+                # which Gemini CLI loads before it parses its arguments.
+                "GEMINI_CLI_TRUST_WORKSPACE": "true",
+            },
+        )
+        # A failure's own report is on stdout; stderr mostly carries retry
+        # stack traces.
+        if failure is not None:
+            raise RuntimeError(f"Gemini CLI failed: {failure}")
+        if result.returncode:
+            raise ProcessError(result)
+        return _parse_last_json_response("".join(chunks))
+
+
 def make_backend(
     name: str,
     work_dir: Path,
@@ -522,6 +766,8 @@ def make_backend(
         return CodexBackend(work_dir, runner, options)
     if name == "claude":
         return ClaudeBackend(work_dir, runner, options)
+    if name == "gemini":
+        return GeminiBackend(work_dir, runner, options)
     raise ValueError(f"unsupported agent backend: {name}")
 
 
@@ -859,9 +1105,10 @@ class TranslationPipeline:
             )
         )
         # As a JSON string field the memory could not end its own container.
-        # Raw inside a delimiter it can, and for the Claude backend this text
-        # becomes the system prompt, so anything that escaped the block would
-        # outrank the pipeline's own instructions for the whole stage.
+        # Raw inside a delimiter it can, and for the Claude and Gemini backends
+        # this text becomes the system prompt, so anything that escaped the
+        # block would outrank the pipeline's own instructions for the whole
+        # stage.
         fenced = memory.replace("</memory>", "<\\/memory>")
         return (
             "MEMORY is the durable terminology, naming, and style record kept "

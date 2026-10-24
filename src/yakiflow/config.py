@@ -46,6 +46,7 @@ _STREAM_DEFAULTS = {
     for backend in TRANSCRIPTION_BACKENDS
 }
 EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
+AGENT_BACKENDS = ("codex", "claude", "gemini")
 
 # The three spellings of the single "where does the ElevenLabs key come from"
 # slot. A configuration layer that sets any one of them replaces the whole
@@ -232,9 +233,9 @@ class CommandsSettings:
 
 
 _STAGE_MODEL_DEFAULTS = {
-    "draft": {"codex": "gpt-6-luna", "claude": "sonnet"},
-    "stream": {"codex": "gpt-6-luna", "claude": "sonnet"},
-    "final": {"codex": "gpt-6.1-sol", "claude": "opus"},
+    "draft": {"codex": "gpt-6-luna", "claude": "sonnet", "gemini": "flash"},
+    "stream": {"codex": "gpt-6-luna", "claude": "sonnet", "gemini": "flash"},
+    "final": {"codex": "gpt-6.1-sol", "claude": "opus", "gemini": "pro"},
 }
 _STAGE_EFFORT_DEFAULTS = {"draft": "medium", "stream": "low", "final": "medium"}
 
@@ -783,11 +784,14 @@ def validate_run_settings(
     for stage_name in ("draft", "final"):
         stage = getattr(settings.agent, stage_name)
         if stage.backend is None:
-            raise ValueError("agent.backend is required (codex or claude)")
-        if stage.backend not in {"codex", "claude"}:
             raise ValueError(
-                f"agent.{stage_name}.backend must be codex or claude, got "
-                f"{stage.backend!r}"
+                "agent.backend is required (" + ", ".join(AGENT_BACKENDS) + ")"
+            )
+        if stage.backend not in AGENT_BACKENDS:
+            raise ValueError(
+                f"agent.{stage_name}.backend must be one of "
+                + ", ".join(AGENT_BACKENDS)
+                + f", got {stage.backend!r}"
             )
         if stage.effort not in EFFORT_LEVELS:
             raise ValueError(

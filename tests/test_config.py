@@ -370,6 +370,25 @@ def test_required_languages_and_agent_backend() -> None:
         )
 
 
+def test_gemini_backend_defaults_to_flash_drafts_and_pro_review() -> None:
+    settings = _validatable(agent={"backend": "gemini"})
+    validate_run_settings(settings)
+
+    assert settings.agent.draft.model == "flash"
+    assert settings.agent.stream.model == "flash"
+    assert settings.agent.final.model == "pro"
+
+
+def test_unknown_agent_backend_names_the_supported_ones() -> None:
+    with pytest.raises(
+        ValueError,
+        match="agent.final.backend must be one of codex, claude, gemini, got 'aider'",
+    ):
+        validate_run_settings(
+            _validatable(agent={"backend": "codex", "final": {"backend": "aider"}})
+        )
+
+
 def test_auto_is_an_explicit_source_language() -> None:
     validate_run_settings(_validatable(source_language="auto"))
 

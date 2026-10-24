@@ -575,6 +575,8 @@ class AgentInspector(ModalScreen[None]):
             log.write("")
         elif event.kind == "error":
             log.write(f"Error · {event.message}")
+        elif event.kind == "warning":
+            log.write(f"Warning · {event.message}")
         elif event.kind == "lifecycle" and event.state == "retrying":
             log.write(f"Status · {event.message}")
         elif event.kind == "lifecycle" and event.state in {"failed", "cancelled"}:
@@ -759,9 +761,9 @@ class YakiFlowApp(App[None]):
             log.write(
                 "Continuing in the interactive Agent for review, refinement, and memory…"
             )
-            # Leave the progress TUI before handing the terminal to Codex
-            # or Claude Code. The CLI performs that hand-off after run()
-            # returns, so the two interfaces never compete for the TTY.
+            # Leave the progress TUI before handing the terminal to the
+            # Agent CLI. The CLI performs that hand-off after run() returns,
+            # so the two interfaces never compete for the TTY.
             self.exit()
         except StreamExit:
             self.exit()

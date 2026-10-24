@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Sequence
 from urllib.parse import urlparse
 
-from .config import Settings, default_model_path
+from .config import AGENT_BACKENDS, Settings, default_model_path
 from .subtitles import DEFAULT_PLAY_RES
 from .transcription import needs_local_whisper
 
@@ -208,10 +208,18 @@ def run_doctor(
         for stage in (settings.agent.draft, settings.agent.final)
         if stage.backend
     }
-    for name in sorted(agent_backends) or ["codex", "claude"]:
+    # Without a configured backend, every Agent CLI is only a candidate:
+    # none of them is missing from a run that has not chosen one.
+    agent_fatal = bool(agent_backends)
+    for name in sorted(agent_backends) or AGENT_BACKENDS:
         executable = shutil.which(name)
         if not executable:
-            checks.append(Check(f"{name} CLI", False, "not found"))
+            checks.append(Check(f"{name} CLI", False, "not found", agent_fatal))
+            continue
+        if name == "gemini":
+            # Gemini CLI has no sign-in status command, and its credentials can
+            # come from settings, environment variables, or .env files.
+            checks.append(Check("gemini CLI", True, f"{executable} (sign-in not checked)"))
             continue
         auth_command = [name, "login", "status"] if name == "codex" else [name, "auth", "status"]
         try:
@@ -226,9 +234,9 @@ def run_doctor(
                 timeout=10,
             )
             detail = (result.stdout or result.stderr).strip().splitlines()
-            checks.append(Check(f"{name} auth", result.returncode == 0, detail[-1] if detail else f"exit {result.returncode}"))
+            checks.append(Check(f"{name} auth", result.returncode == 0, detail[-1] if detail else f"exit {result.returncode}", agent_fatal))
         except (OSError, subprocess.SubprocessError) as exc:
-            checks.append(Check(f"{name} auth", False, str(exc)))
+            checks.append(Check(f"{name} auth", False, str(exc), agent_fatal))
     # Both review checks are advisory: without them the subtitles still get
     # written, only the review has no preview to show them in.
     if settings.review.display_mode in {"split", "both"}:
