@@ -697,4 +697,55 @@ def test_stream_completion_dialog_disables_review_without_results():
             assert app.screen.query_one("#review", Button).disabled
             assert not app.screen.query_one("#retranscribe", Button).disabled
             assert not app.screen.query_one("#exit", Button).disabled
+            for key in ("down", "down", "up", "up"):
+                await pilot.press(key)
+                assert app.screen.focused.id != "review"
+    asyncio.run(exercise())
+
+
+def test_stream_completion_dialog_is_centered_and_keyboard_operable(tmp_path) -> None:
+    from textual.widgets import Button
+    from yakiflow.tui import StreamCompletionDialog
+
+    class CompletionJob:
+        def __init__(self) -> None:
+            self.db = JobDatabase(tmp_path / "job.sqlite3")
+            self.work_dir = tmp_path
+            self.listener = None
+            self.diarization_enabled = False
+            self.alignment_model_failure_listener = None
+            self.stream_completion_listener = None
+            self.choices: list[str] = []
+
+        async def run(self):
+            self.choices.append(await self.stream_completion_listener(True))
+            return []
+
+    async def exercise() -> None:
+        job = CompletionJob()
+        app = YakiFlowApp(job)
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            dialog = app.screen
+            assert isinstance(dialog, StreamCompletionDialog)
+            for button in dialog.query(Button):
+                region = button.region
+                assert region.x == 80 - region.right
+            assert dialog.focused.id == "retranscribe"
+
+            await pilot.press("down")
+            assert dialog.focused.id == "exit"
+            await pilot.press("down")
+            assert dialog.focused.id == "review"
+            await pilot.press("up")
+            assert dialog.focused.id == "exit"
+            await pilot.press("up")
+            assert dialog.focused.id == "retranscribe"
+            await pilot.press("up")
+            assert dialog.focused.id == "review"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert job.choices == ["review"]
+        job.db.close()
+
     asyncio.run(exercise())

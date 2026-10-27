@@ -632,18 +632,57 @@ class AlignmentModelFailureDialog(ModalScreen[AlignmentModelFailureDecision]):
 
 
 class StreamCompletionDialog(ModalScreen[str]):
+    """Choose the next step once a live capture has ended."""
+
+    CSS = """
+    StreamCompletionDialog { align: center middle; }
+    #stream-completion-dialog {
+        width: 60;
+        max-width: 94%;
+        height: auto;
+        background: $surface;
+        border: round $accent;
+        padding: 1 2;
+    }
+    #stream-completion-title {
+        height: auto;
+        margin-bottom: 1;
+        text-style: bold;
+        text-align: center;
+    }
+    #stream-completion-dialog Button { width: 100%; }
+    #stream-completion-help {
+        height: 1;
+        margin-top: 1;
+        color: $text-muted;
+        text-align: center;
+    }
+    """
+    BINDINGS = [
+        Binding("up", "app.focus_previous", "", show=False),
+        Binding("down", "app.focus_next", "", show=False),
+    ]
+
     def __init__(self, available: bool):
         super().__init__()
         self.available = available
 
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static("Capture complete. Choose how to finish the recording.")
+        with Vertical(id="stream-completion-dialog"):
+            yield Static(
+                "Capture complete. Choose how to finish the recording.",
+                id="stream-completion-title",
+            )
             yield Button("直接进入 review", id="review", disabled=not self.available)
             yield Button("使用非 stream 重新转录", id="retranscribe", variant="primary")
             yield Button("退出并保留工作目录", id="exit")
+            yield Static("↑/↓ Select · Enter confirm", id="stream-completion-help")
+
+    def on_mount(self) -> None:
+        self.query_one("#retranscribe", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
         self.dismiss(event.button.id)
 
 
@@ -868,6 +907,15 @@ class YakiFlowApp(App[None]):
 
     def action_quit(self) -> None:
         self.exit()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # The app's priority navigation bindings would otherwise scroll the
+        # hidden subtitle table instead of moving between the dialog buttons.
+        if action.startswith("subtitles_") and isinstance(
+            self.screen, StreamCompletionDialog
+        ):
+            return False
+        return True
 
     def action_stop(self) -> None:
         worker = self._drive_worker
