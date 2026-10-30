@@ -516,6 +516,8 @@ def test_both_display_mode_opens_external_command_and_tmux_preview(
 
     assert calls[0][0] == ("editor", str(subtitle))
     assert calls[1][0][:2] == ("tmux", "split-window")
+    # The user types into the Agent, so the preview pane must not take focus.
+    assert "-d" in calls[1][0][:calls[1][0].index("--")]
     assert "yakiflow.subtitle_preview" in calls[1][0]
     assert display.marker == tmp_path / ".agent-display-done"
 
@@ -764,6 +766,8 @@ def test_new_tmux_review_session_sets_the_agent_environment_itself(
     # A session on a running tmux server inherits the server's environment,
     # so the variable has to be part of the Agent's own command line.
     assert str(new_session[-1]).startswith("GEMINI_CLI_TRUST_WORKSPACE=true gemini ")
+    split = next(args for args in calls if args[:2] == ("tmux", "split-window"))
+    assert "-d" in split[:split.index("--")]
 
 
 def test_other_review_backends_leave_no_gemini_settings(

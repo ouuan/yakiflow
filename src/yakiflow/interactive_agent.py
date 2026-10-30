@@ -92,7 +92,8 @@ def review_open_argv(command: str, file_path: Path, work_dir: Path) -> list[str]
 def _split_window_args() -> list[str]:
     """Return the tmux split-window argv for the current terminal shape."""
     wide = shutil.get_terminal_size(fallback=(100, 24)).columns >= 120
-    args = ["tmux", "split-window", "-h" if wide else "-v"]
+    # -d keeps the Agent pane focused; the preview only needs to be seen.
+    args = ["tmux", "split-window", "-d", "-h" if wide else "-v"]
     if not wide:
         args.append("-b")
     return args
