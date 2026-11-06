@@ -757,10 +757,10 @@ def test_empty_translation_is_retried_and_reported(tmp_path: Path) -> None:
     backend = SequenceBackend(["", "你好"])
     retries: list[str] = []
 
-    async def on_retry(message: str) -> None:
+    async def on_warning(message: str) -> None:
         retries.append(message)
 
-    pipeline = TranslationPipeline(settings, backend, db, "", on_retry=on_retry)
+    pipeline = TranslationPipeline(settings, backend, db, "", on_warning=on_warning)
     result = asyncio.run(pipeline.translate_draft(db.list_cues()))
 
     assert backend.calls == 2
@@ -795,10 +795,10 @@ def test_timed_out_agent_batch_is_cancelled_and_retried(tmp_path: Path) -> None:
     backend = TimeoutThenSuccessBackend()
     retries: list[str] = []
 
-    async def on_retry(message: str) -> None:
+    async def on_warning(message: str) -> None:
         retries.append(message)
 
-    pipeline = TranslationPipeline(settings, backend, db, "", on_retry=on_retry)
+    pipeline = TranslationPipeline(settings, backend, db, "", on_warning=on_warning)
     result = asyncio.run(pipeline.translate_draft(db.list_cues()))
 
     assert backend.calls == 2

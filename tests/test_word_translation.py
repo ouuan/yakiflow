@@ -196,6 +196,53 @@ def test_validation_failures_exhaust_attempts_and_fail(tmp_path: Path) -> None:
     db.close()
 
 
+class OverlongBackend(SegmentingBackend):
+    """Translates every cue into 50 wide characters, weighing 100 > 84."""
+
+    @staticmethod
+    def _cue(words: list[dict]) -> dict:
+        return {**SegmentingBackend._cue(words), "translated": "长" * 50}
+
+
+def test_over_limit_cues_are_retried_then_kept_with_a_warning(
+    tmp_path: Path,
+) -> None:
+    db = JobDatabase(tmp_path / "job.sqlite3")
+    # 5 s of speech: long enough that the character limit is not relaxed.
+    _store_words(db, [_word(0, 0.0, 0.4, "a ", "1"), _word(1, 4.5, 5.0, "b", "1")])
+    backend = OverlongBackend()
+    warnings: list[str] = []
+    traces = []
+
+    async def on_warning(message: str) -> None:
+        warnings.append(message)
+
+    pipeline = TranslationPipeline(
+        _settings(max_attempts=2), backend, db, "",
+        on_warning=on_warning, on_agent_event=traces.append,
+    )
+
+    final = asyncio.run(pipeline.segment_and_translate())
+
+    # Every attempt but the last feeds the overrun back for a split ...
+    assert len(backend.prompts) == 2
+    assert "translation weighs 100 characters" in backend.prompts[1]
+    assert "split the cue" in backend.prompts[1]
+    # ... and the last one keeps the cue and reports the overrun instead.
+    assert [cue.translated for cue in final] == ["长" * 50]
+    assert len(warnings) == 2
+    assert "retrying 2/2" in warnings[0]
+    assert warnings[1] == (
+        "Agent word batch kept over-limit cues on its last attempt: "
+        "cue 0–1 at 0:00:00.00 translation weighs 100 characters "
+        "(wide characters count as two), above the 84 limit"
+    )
+    assert [trace.message for trace in traces if trace.kind == "warning"] == [
+        warnings[1]
+    ]
+    db.close()
+
+
 def test_missing_word_batches_skip_covered_ranges(tmp_path: Path) -> None:
     db = JobDatabase(tmp_path / "job.sqlite3")
     words = _conversation_words()
@@ -451,7 +498,7 @@ def _validate(raw, batch_words, tmp_path):
     db = JobDatabase(tmp_path / "job.sqlite3")
     try:
         pipeline = _pipeline(db, SegmentingBackend())
-        return pipeline._cues_from_word_response(raw, batch_words)
+        return pipeline._cues_from_word_response(raw, batch_words)[0]
     finally:
         db.close()
 

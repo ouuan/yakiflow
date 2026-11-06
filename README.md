@@ -574,7 +574,8 @@ recognize speakers. With `split`, speaker labels may differ between chunks.
 | `subtitles.max-cue-chars` | `84` | Character limit per segmented cue; integer of at least 8. In word-based segmentation, applies per language, with CJK and other wide characters counting as two. |
 
 For word-based segmentation, either duration or character limit may be exceeded
-when the other measure stays below half its limit.
+when the other measure stays below half its limit. If a cue still exceeds the
+limits on the Agent's last attempt, YakiFlow keeps it and shows a warning.
 
 #### Agents
 

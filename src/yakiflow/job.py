@@ -629,9 +629,6 @@ class YakiFlowJob:
         if event.kind == "lifecycle":
             await self.emit("agent", self._agent_status())
 
-    async def _agent_retry(self, message: str) -> None:
-        await self.emit("warning", message)
-
     def _translation_pipeline(self) -> TranslationPipeline:
         # Only a review-only job has no backend, and it never drafts.
         assert self.backend is not None
@@ -640,7 +637,7 @@ class YakiFlowJob:
             self.backend,
             self.db,
             self.memory_store.read(),
-            on_retry=self._agent_retry,
+            on_warning=lambda message: self.emit("warning", message),
             on_agent_event=self.agent_event,
         )
 

@@ -18,7 +18,7 @@ from .config import Settings
 from .database import JobDatabase
 from .models import AgentTraceEvent, Cue, Word, cue_text_weight, word_cue_id
 from .process import CommandRunner, ProcessError
-from .subtitles import write_text_atomic
+from .subtitles import timestamp, write_text_atomic
 
 if TYPE_CHECKING:
     from .word_processing import WordBatch
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 ProgressCallback = Callable[[int, int], Awaitable[None]]
 # One landed word batch as a delta: the cues it added, the IDs it replaced.
 WordBatchCallback = Callable[[list[Cue], list[str]], Awaitable[None]]
-RetryCallback = Callable[[str], Awaitable[None]]
+WarningCallback = Callable[[str], Awaitable[None]]
 AgentTraceCallback = Callable[[AgentTraceEvent], Awaitable[None] | None]
 _AGENT_OUTPUT_DETAIL_LIMIT = 100_000
 _MAX_RETRY_BACKOFF_SECONDS = 8.0
@@ -954,14 +954,14 @@ class TranslationPipeline:
         backend: AgentBackend,
         db: JobDatabase,
         memory: str,
-        on_retry: RetryCallback | None = None,
+        on_warning: WarningCallback | None = None,
         on_agent_event: AgentTraceCallback | None = None,
     ):
         self.settings = settings
         self.backend = backend
         self.db = db
         self.memory = memory
-        self.on_retry = on_retry
+        self.on_warning = on_warning
         self.on_agent_event = on_agent_event
         self._write_lock = asyncio.Lock()
         self._agent_semaphore = asyncio.Semaphore(settings.agent.draft.workers)
@@ -1410,8 +1410,8 @@ class TranslationPipeline:
                     state="retrying", cues=batch, model=model,
                     attempt=attempt + 1, max_attempts=attempts,
                 )
-                if self.on_retry:
-                    await self.on_retry(
+                if self.on_warning:
+                    await self.on_warning(
                         f"Agent draft batch failed: {error}; "
                         f"retrying {attempt + 1}/{attempts}"
                     )
@@ -1829,13 +1829,19 @@ class TranslationPipeline:
         return text
 
     def _cues_from_word_response(
-        self, raw: dict[str, Any], batch_words: Sequence[Word]
-    ) -> list[Cue]:
+        self,
+        raw: dict[str, Any],
+        batch_words: Sequence[Word],
+        *,
+        accept_overruns: bool = False,
+    ) -> tuple[list[Cue], list[str]]:
         """Validate the agent's intervals and derive cues mechanically.
 
         The agent chose only word intervals and text; start, end, and speaker
         come from the words. Violations are collected into one error whose
         messages name concrete word indices, so a retry can quote them back.
+        With ``accept_overruns``, a response that breaks only the subtitle
+        limits is kept, and the overruns are returned instead of raised.
         """
         subtitles = self.settings.subtitles
         by_ordinal = {word.ordinal: word for word in batch_words}
@@ -1843,6 +1849,7 @@ class TranslationPipeline:
         if not isinstance(items, list) or not items:
             raise ValueError("response carries no cues")
         errors: list[str] = []
+        overruns: list[str] = []
         claimed: dict[str | None, set[int]] = {}
         cues: list[Cue] = []
         for item in items:
@@ -1901,13 +1908,14 @@ class TranslationPipeline:
             # dense quick remark may run wide.
             duration = end - start
             widest = max(cue_text_weight(source), cue_text_weight(translated))
+            located = f"{label} at {timestamp(start)}"
             if (
                 duration > subtitles.max_cue_seconds
                 and 2 * widest >= subtitles.max_cue_chars
             ):
-                errors.append(
-                    f"{label} spans {duration:.2f}s, above the "
-                    f"{subtitles.max_cue_seconds:g}s limit; split it"
+                overruns.append(
+                    f"{located} spans {duration:.2f}s, above the "
+                    f"{subtitles.max_cue_seconds:g}s limit"
                 )
             for text_label, text in (("source", source), ("translation", translated)):
                 weight = cue_text_weight(text)
@@ -1915,10 +1923,10 @@ class TranslationPipeline:
                     weight > subtitles.max_cue_chars
                     and 2 * duration >= subtitles.max_cue_seconds
                 ):
-                    errors.append(
-                        f"{label} {text_label} weighs {weight} characters "
+                    overruns.append(
+                        f"{located} {text_label} weighs {weight} characters "
                         "(wide characters count as two), above the "
-                        f"{subtitles.max_cue_chars} limit; split the cue"
+                        f"{subtitles.max_cue_chars} limit"
                     )
             cues.append(Cue(
                 word_cue_id(first, last),
@@ -1951,9 +1959,11 @@ class TranslationPipeline:
             errors.append(
                 f"no cue covers any words of speaker {speaker!r}"
             )
-        if errors:
-            raise ValueError("; ".join(errors))
-        return cues
+        if errors or (overruns and not accept_overruns):
+            raise ValueError("; ".join(
+                errors + [f"{overrun}; split the cue" for overrun in overruns]
+            ))
+        return cues, overruns
 
     async def _run_word_batch(
         self, batch_words: list[Word], all_words: Sequence[Word]
@@ -2034,7 +2044,12 @@ class TranslationPipeline:
                     max_attempts=attempts,
                     detail=_structured_output_detail(raw),
                 )
-                cues = self._cues_from_word_response(raw, batch_words)
+                # A cue the agent still could not fit into the subtitle
+                # limits on the last attempt is kept rather than failing the
+                # whole batch with every valid cue in it.
+                cues, overruns = self._cues_from_word_response(
+                    raw, batch_words, accept_overruns=attempt == attempts
+                )
             except asyncio.CancelledError:
                 self.db.finish_batch(batch_id, error="cancelled")
                 await self._emit_agent(
@@ -2079,8 +2094,8 @@ class TranslationPipeline:
                     state="retrying", model=model,
                     attempt=attempt + 1, max_attempts=attempts,
                 )
-                if self.on_retry:
-                    await self.on_retry(
+                if self.on_warning:
+                    await self.on_warning(
                         f"Agent word batch failed: {error}; "
                         f"retrying {attempt + 1}/{attempts}"
                     )
@@ -2089,6 +2104,17 @@ class TranslationPipeline:
                 await asyncio.sleep(min(delay * 2 ** (attempt - 1), cap))
                 continue
             self.db.finish_batch(batch_id, raw)
+            if overruns:
+                warning = (
+                    "Agent word batch kept over-limit cues on its last "
+                    f"attempt: {'; '.join(overruns)}"
+                )
+                await self._emit_agent(
+                    operation_id, "warning", warning,
+                    model=model, attempt=attempt, max_attempts=attempts,
+                )
+                if self.on_warning:
+                    await self.on_warning(warning)
             message = f"Segmented {len(cues)} cues from {label}"
             await self._emit_agent(
                 operation_id, "result", message,
