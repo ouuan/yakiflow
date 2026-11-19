@@ -572,10 +572,18 @@ def _parse_last_json_response(text: str) -> dict[str, Any]:
     raise error
 
 
-# Denies every tool, which Gemini CLI then leaves out of the request entirely.
+# Keep one harmless declaration in the request. Gemini CLI 0.68 still sends an
+# invalid ``tools: [{functionDeclarations: []}]`` entry when policy excludes
+# every tool, so allowing ``update_topic`` avoids that API error while keeping
+# filesystem and process tools unavailable.
 _GEMINI_NO_TOOLS_POLICY = """[[rule]]
 toolName = "*"
 decision = "deny"
+priority = 998
+
+[[rule]]
+toolName = "update_topic"
+decision = "allow"
 priority = 999
 """
 
@@ -594,7 +602,9 @@ def _write_stable(path: Path, text: str) -> None:
     write_text_atomic(path, text)
 
 
-def write_gemini_settings(directory: Path, effort: str) -> None:
+def write_gemini_settings(
+    directory: Path, effort: str, *, enable_topic_updates: bool = False
+) -> None:
     """Give Gemini CLI sessions started in ``directory`` the thinking level ``effort``.
 
     Gemini CLI has no reasoning option on its command line: the thinking
@@ -621,6 +631,10 @@ def write_gemini_settings(directory: Path, effort: str) -> None:
             ]
         }
     }
+    if enable_topic_updates:
+        # The allowed declaration must remain visible even if user settings
+        # disable topic narration, otherwise the request has no tools again.
+        settings["general"] = {"topicUpdateNarration": True}
     _write_stable(
         directory / ".gemini" / "settings.json",
         json.dumps(settings, indent=2) + "\n",
@@ -670,7 +684,7 @@ class GeminiBackend(AgentBackend):
         # Gemini sends ahead of the cues identical; the system prompts, named
         # by their content, are kept beside it.
         directory = self.work_dir / f"agent-gemini-{effort}"
-        write_gemini_settings(directory, effort)
+        write_gemini_settings(directory, effort, enable_topic_updates=True)
         # Draft translation answers from the prompt alone, and tool definitions
         # are the largest remaining block of per-request tokens.
         _write_stable(directory / "no-tools.toml", _GEMINI_NO_TOOLS_POLICY)

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -371,6 +372,7 @@ def test_gemini_backend_assembles_the_streamed_answer(tmp_path: Path) -> None:
     ]
     # The effort picks the working directory, whose settings carry its level.
     assert seen["cwd"] == tmp_path / "agent-gemini-low"
+    assert seen["settings"]["general"]["topicUpdateNarration"] is True
     override = seen["settings"]["modelConfigs"]["customOverrides"][0]
     assert override["match"] == {"model": "chat-base-3", "overrideScope": "core"}
     assert override["modelConfig"]["generateContentConfig"]["thinkingConfig"] == {
@@ -388,7 +390,11 @@ def test_gemini_backend_assembles_the_streamed_answer(tmp_path: Path) -> None:
     assert isinstance(system, str)
     assert system.startswith("stable guidance\n")
     assert json.dumps(schema) in system
-    assert 'toolName = "*"' in seen["policy"] and 'decision = "deny"' in seen["policy"]
+    rules = tomllib.loads(seen["policy"])["rule"]
+    assert sorted(rules, key=lambda rule: rule["priority"], reverse=True) == [
+        {"toolName": "update_topic", "decision": "allow", "priority": 999},
+        {"toolName": "*", "decision": "deny", "priority": 998},
+    ]
     # Commentary before a tool call is shown, never parsed as the answer.
     assert [(event.kind, event.message) for event in events] == [
         ("agent_message", "Let me check."),
