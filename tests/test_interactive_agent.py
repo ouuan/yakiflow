@@ -542,6 +542,15 @@ def test_preview_command_carries_the_speaker_column_flag(tmp_path: Path) -> None
     )[-1] == ""
 
 
+def test_agy_review_starts_with_an_interactive_prompt() -> None:
+    settings = make_settings(agent={"final": {
+        "backend": "agy", "model": "reviewer", "effort": "high", "extra_options": ["--sandbox"],
+    }})
+    assert build_interactive_command(settings, "review this") == [
+        "agy", "--model", "reviewer", "--effort", "high", "--sandbox", "--prompt-interactive", "review this",
+    ]
+
+
 def test_interactive_commands_append_final_extra_options() -> None:
     codex = build_interactive_command(
         make_settings(

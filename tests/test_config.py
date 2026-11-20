@@ -379,10 +379,18 @@ def test_gemini_backend_defaults_to_flash_drafts_and_pro_review() -> None:
     assert settings.agent.final.model == "pro"
 
 
+def test_agy_defaults_to_hydrogen_for_translation_and_neon_for_review() -> None:
+    settings = _validatable(agent={"backend": "agy"})
+    validate_run_settings(settings)
+    assert settings.agent.draft.model == "gemini-4-hydrogen"
+    assert settings.agent.stream.model == "gemini-4-hydrogen"
+    assert settings.agent.final.model == "gemini-4-neon"
+
+
 def test_unknown_agent_backend_names_the_supported_ones() -> None:
     with pytest.raises(
         ValueError,
-        match="agent.final.backend must be one of codex, claude, gemini, got 'aider'",
+        match="agent.final.backend must be one of codex, claude, gemini, agy, got 'aider'",
     ):
         validate_run_settings(
             _validatable(agent={"backend": "codex", "final": {"backend": "aider"}})

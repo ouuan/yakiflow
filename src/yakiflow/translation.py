@@ -769,6 +769,85 @@ class GeminiBackend(AgentBackend):
         return _parse_last_json_response("".join(chunks))
 
 
+def agy_model_options(model: str, effort: str) -> list[str]:
+    options = ["--model", model] if model else []
+    return [*options, "--effort", effort]
+
+
+class AgyBackend(AgentBackend):
+    name = "agy"
+
+    def __init__(
+        self, work_dir: Path, runner: CommandRunner | None = None, options: Sequence[str] = (),
+    ):
+        self.work_dir = work_dir
+        self.runner = runner or CommandRunner()
+        self.options = tuple(options)
+
+    async def invoke_with_trace(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model: str,
+        effort: str,
+        schema: dict[str, Any],
+        on_event: BackendTraceCallback | None = None,
+    ) -> dict[str, Any]:
+        final: dict[str, Any] = {}
+
+        async def line(stream: str, value: str) -> None:
+            nonlocal final
+            if stream != "stdout":
+                return
+            try:
+                data = json.loads(value)
+            except json.JSONDecodeError:
+                return
+            if not isinstance(data, dict):
+                return
+            if data.get("event") == "result" and isinstance(data.get("result"), dict):
+                final = data["result"]
+            step = data.get("step_update")
+            if on_event is None or not isinstance(step, dict) or step.get("step_type") != "tool":
+                return
+            info = step.get("tool_info") or {}
+            done = step.get("state") == "DONE"
+            detail = (info.get("error") or info.get("output")) if done else info.get("parameters")
+            event = BackendTraceEvent(
+                "tool_result" if done else "tool_start",
+                f"Call {step.get('tool_name') or info.get('name') or 'tool'}",
+                str(step["step_index"]) if "step_index" in step else None,
+                _display_value(detail) or None,
+            )
+            maybe = on_event(event)
+            if inspect.isawaitable(maybe):
+                await maybe
+
+        deny = [f"{action}(*)" for action in (
+            "read_file", "write_file", "command", "mcp", "read_url", "execute_url", "download_url",
+        )]
+        command = [
+            "agy", "--input-format", "stream-json", "--output-format", "stream-json",
+            "--disable-slash-commands", "--settings", json.dumps({"permissions": {"deny": deny}}),
+            "--json-schema", json.dumps(schema, ensure_ascii=False),
+            *agy_model_options(model, effort), *self.options,
+        ]
+        content = f"{system}\n{prompt}" if system else prompt
+        message = {"event": "user", "message": {"content": content}}
+        result = await self.runner.run(
+            command, cwd=self.work_dir, stdin=(json.dumps(message, ensure_ascii=False) + "\n").encode(),
+            on_line=line, check=False,
+        )
+        if final.get("error"):
+            raise RuntimeError(f"agy failed: {final['error']}")
+        if result.returncode:
+            raise ProcessError(result)
+        if final.get("status") != "SUCCESS" or not isinstance(final.get("structured_output"), dict):
+            raise ValueError(f"agy returned no successful structured result (status: {final.get('status')})")
+        return final["structured_output"]
+
+
 def make_backend(
     name: str,
     work_dir: Path,
@@ -782,6 +861,8 @@ def make_backend(
         return ClaudeBackend(work_dir, runner, options)
     if name == "gemini":
         return GeminiBackend(work_dir, runner, options)
+    if name == "agy":
+        return AgyBackend(work_dir, runner, options)
     raise ValueError(f"unsupported agent backend: {name}")
 
 

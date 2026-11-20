@@ -234,10 +234,8 @@ def _agent_checks(checks: list[Check], agent_backends: set[str]) -> None:
         if not executable:
             checks.append(Check(f"{name} CLI", False, "not found", agent_fatal))
             continue
-        if name == "gemini":
-            # Gemini CLI has no sign-in status command, and its credentials can
-            # come from settings, environment variables, or .env files.
-            checks.append(Check("gemini CLI", True, f"{executable} (sign-in not checked)"))
+        if name in {"gemini", "agy"}:
+            checks.append(Check(f"{name} CLI", True, f"{executable} (sign-in not checked)"))
             continue
         auth_command = [name, "login", "status"] if name == "codex" else [name, "auth", "status"]
         try:

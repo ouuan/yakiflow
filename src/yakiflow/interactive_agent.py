@@ -23,7 +23,7 @@ from .database import JobDatabase
 from .media_player import open_media
 from .models import OutputMode
 from .process import CommandRunner, ProcessError, ProcessResult
-from .translation import write_gemini_settings
+from .translation import agy_model_options, write_gemini_settings
 
 
 class AgentFileDisplay:
@@ -435,6 +435,8 @@ def build_interactive_command(settings: Settings, prompt: str) -> list[str]:
         command.extend(extra_options)
         command.append(prompt)
         return command
+    if final.backend == "agy":
+        return ["agy", *agy_model_options(model, effort), *extra_options, "--prompt-interactive", prompt]
     if final.backend == "gemini":
         # The thinking level comes from the workspace settings that
         # stage_interactive_workspace writes, not from an option.

@@ -18,6 +18,7 @@ from yakiflow.translation import (
     claude_trace_events,
     codex_trace_events,
     gemini_trace_events,
+    make_backend,
 )
 
 
@@ -282,6 +283,57 @@ def test_draft_backend_commands_append_only_matching_options(tmp_path: Path) -> 
     assert "service_tier=fast" not in claude
     # The staged system prompt is written for the call and cleaned up after it.
     assert not list(tmp_path.glob("agent-system-*.md"))
+
+
+def test_agy_translates_one_batch_from_stdin(tmp_path: Path) -> None:
+    schema = {"type": "object"}
+    answer = {"cues": [{"id": "1", "translated": "你好"}]}
+    events = []
+
+    class Runner:
+        async def run(self, args, *, cwd, stdin, on_line, check):
+            assert args[0] == "agy" and cwd == tmp_path
+            assert args[args.index("--input-format") + 1] == "stream-json"
+            assert args[args.index("--output-format") + 1] == "stream-json"
+            assert json.loads(args[args.index("--json-schema") + 1]) == schema
+            assert "command(*)" in json.loads(args[args.index("--settings") + 1])["permissions"]["deny"]
+            assert "--disable-slash-commands" in args
+            assert args[-4:] == ["--effort", "medium", "--agent", "translator"]
+            assert "--model" not in args
+            assert json.loads(stdin) == {"event": "user", "message": {"content": "guidance\ncue\n你好"}}
+            step = {"step_type": "tool", "step_index": 4, "tool_name": "read_file"}
+            for state in ("ACTIVE", "DONE"):
+                await on_line("stdout", json.dumps({"event": "step_update", "step_update": {**step, "state": state}}))
+            await on_line("stdout", json.dumps({"event": "result", "result": {
+                "status": "SUCCESS", "structured_output": answer,
+            }}))
+            return ProcessResult(tuple(args), 0, "", "")
+
+    backend = make_backend("agy", tmp_path, Runner(), options=("--agent", "translator"))
+    result = asyncio.run(backend.invoke_with_trace(
+        "cue\n你好", system="guidance", model="", effort="medium", schema=schema, on_event=events.append,
+    ))
+    assert result == answer
+    assert [(event.kind, event.event_id) for event in events] == [("tool_start", "4"), ("tool_result", "4")]
+
+
+@pytest.mark.parametrize(("terminal", "code", "error"), [
+    ({"status": "ERROR", "error": "invalid model selection"}, 1, "invalid model selection"),
+    ({"status": "WAITING", "structured_output": {}}, 0, "WAITING"),
+    ({"status": "SUCCESS", "response": "not structured"}, 0, "no successful structured result"),
+    (None, 1, "authentication required"),
+])
+def test_agy_requires_a_successful_structured_result(tmp_path, terminal, code, error) -> None:
+    class Runner:
+        async def run(self, args, *, on_line, **kwargs):
+            assert args[args.index("--model") + 1] == "chosen"
+            if terminal:
+                await on_line("stdout", json.dumps({"event": "result", "result": terminal}))
+            return ProcessResult(tuple(args), code, "", "authentication required")
+
+    backend = make_backend("agy", tmp_path, Runner())
+    with pytest.raises((RuntimeError, ValueError), match=error):
+        asyncio.run(backend.invoke_with_trace("cue", model="chosen", effort="high", schema={}))
 
 
 def test_gemini_trace_adapter_normalizes_tools_and_errors() -> None:

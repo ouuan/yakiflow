@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import yakiflow.doctor as doctor_module
 from conftest import make_settings
 from yakiflow.doctor import run_doctor, run_review_doctor
@@ -177,8 +179,9 @@ def test_external_whisper_server_is_not_checked_for_a_local_model(
     assert all(check.name != "whisper model" for check in checks)
 
 
-def test_gemini_cli_is_found_without_a_sign_in_command(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("backend", ["gemini", "agy"])
+def test_cli_is_found_without_a_sign_in_command(
+    tmp_path: Path, monkeypatch, backend: str,
 ) -> None:
     model = _stub_dependencies(tmp_path, monkeypatch)
     commands: list[list[str]] = []
@@ -191,15 +194,15 @@ def test_gemini_cli_is_found_without_a_sign_in_command(
 
     checks = run_doctor(
         make_settings(
-            whisper={"model": model}, agent={"backend": "gemini"}
+            whisper={"model": model}, agent={"backend": backend}
         ).resolved()
     )
     mapped = {check.name: check for check in checks}
 
-    assert mapped["gemini CLI"].ok
-    assert mapped["gemini CLI"].detail == "/bin/gemini (sign-in not checked)"
-    assert "gemini auth" not in mapped
-    assert not any(command[0] == "gemini" for command in commands)
+    assert mapped[f"{backend} CLI"].ok
+    assert mapped[f"{backend} CLI"].detail == f"/bin/{backend} (sign-in not checked)"
+    assert f"{backend} auth" not in mapped
+    assert not any(command[0] == backend for command in commands)
 
 
 def test_doctor_without_an_agent_backend_checks_every_agent_cli(
@@ -210,7 +213,7 @@ def test_doctor_without_an_agent_backend_checks_every_agent_cli(
     checks = run_doctor(make_settings(whisper={"model": model}).resolved())
     names = {check.name for check in checks}
 
-    assert {"codex auth", "claude auth", "gemini CLI"} <= names
+    assert {"codex auth", "claude auth", "gemini CLI", "agy CLI"} <= names
 
 
 def test_agent_clis_are_advisory_until_a_backend_is_chosen(

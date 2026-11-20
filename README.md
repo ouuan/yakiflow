@@ -4,7 +4,7 @@
 
 YakiFlow creates ASS subtitles for local videos, audio files, web videos, and
 live streams. Choose source text, translation, or bilingual output, use local
-or cloud transcription, and translate with Codex, Claude Code, or Gemini CLI.
+or cloud transcription, and translate with Codex, Claude Code, Gemini CLI, or Antigravity CLI.
 Before saving, you can review and edit the result with an interactive Agent.
 Backends with speaker recognition label speakers and preserve simultaneous
 speech.
@@ -19,7 +19,7 @@ You need:
 
 - Python 3.12 or newer;
 - `ffmpeg`, together with the `ffprobe` that ships with it;
-- the `codex`, `claude`, or `gemini` CLI, installed and signed in;
+- one of `codex`, `claude`, `gemini`, or `agy`, installed and signed in;
 - for the default local transcription, a recent
   [whisper.cpp](https://github.com/ggml-org/whisper.cpp) build whose
   `whisper-cli` executable is on `PATH`.
@@ -60,9 +60,8 @@ output-mode = "bilingual"
 backend = "codex"
 ```
 
-Use `backend = "claude"` if you signed in with Claude Code, or
-`backend = "gemini"` for Gemini CLI. You can also omit this file and pass the
-equivalent options on every run.
+Set `backend` to the CLI you installed. You can also omit this file and pass
+the equivalent options on every run.
 
 ### 4. Download the default model and check the setup
 
@@ -71,12 +70,11 @@ yakiflow models fetch
 yakiflow doctor -c agent.backend=codex
 ```
 
-Replace `codex` with `claude` or `gemini` when appropriate. Fix every reported
+Replace `codex` with your chosen backend. Fix every reported
 `FAIL` that applies to your input; `yt-dlp` is only needed for URLs, and the
 whisper.cpp checks only apply to the Whisper backends. `models fetch` is
 unnecessary for cloud backends. `WARN` indicates a missing optional tool, such
-as `tmux` for split-pane review. `doctor` cannot tell whether Gemini CLI is
-signed in, so run `gemini` once and sign in before your first job.
+as `tmux` for split-pane review. For `gemini` and `agy`, `doctor` does not check sign-in.
 
 `run`, `resume`, and `review` also check the setup on startup. Use
 `--skip-health-check` if you are sure a reported check does not apply.
@@ -437,7 +435,7 @@ output-dir = "./subtitles"
 # memory = "./memory.md"  # share terminology and style between these jobs
 
 [agent]
-backend = "codex"        # or claude, gemini
+backend = "codex"
 
 [agent.draft]
 effort = "high"
@@ -585,16 +583,16 @@ shared choice or `agent.final.backend` to override review only.
 
 | Key within the table | Default / inheritance | Meaning / accepted values |
 | --- | --- | --- |
-| `backend` | Unset in `[agent]`; all three stages inherit it | `codex`, `claude`, or `gemini`. Required for the active translation stage (draft or stream) and final, either shared or set per stage. |
+| `backend` | Unset in `[agent]`; all three stages inherit it | `codex`, `claude`, `gemini`, or `agy`. Required for the active translation stage (draft or stream) and final, either shared or set per stage. |
 | `model` | Unset in `[agent]`; all three stages inherit it, then use the stage default below | Agent model name. |
 | `effort` | Unset in `[agent]`; all three stages inherit it, then use the stage default below | `minimal`, `low`, `medium`, `high`, or `xhigh`. |
 | `extra-options` | Unset in `[agent]`; all three stages inherit it, otherwise `[]` | Additional Agent CLI arguments as a string array; `[]` explicitly clears inherited arguments. |
 
-| Stage | Default Codex model | Default Claude model | Default Gemini model | Default effort |
-| --- | --- | --- | --- | --- |
-| `agent.draft` | `gpt-6-luna` | `sonnet` | `flash` | `medium` |
-| `agent.stream` | `gpt-6-luna` | `sonnet` | `flash` | `low` |
-| `agent.final` | `gpt-6.1-sol` | `opus` | `pro` | `medium` |
+| Stage | Default Codex model | Default Claude model | Default Gemini model | Default `agy` model | Default effort |
+| --- | --- | --- | --- | --- | --- |
+| `agent.draft` | `gpt-6-luna` | `sonnet` | `flash` | `gemini-4-hydrogen` | `medium` |
+| `agent.stream` | `gpt-6-luna` | `sonnet` | `flash` | `gemini-4-hydrogen` | `low` |
+| `agent.final` | `gpt-6.1-sol` | `opus` | `pro` | `gemini-4-neon` | `medium` |
 
 Each stage resolves its shared keys independently: stage setting, then
 `[agent]`, then its built-in default. `[agent.stream]` does not inherit from

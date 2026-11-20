@@ -46,7 +46,7 @@ _STREAM_DEFAULTS = {
     for backend in TRANSCRIPTION_BACKENDS
 }
 EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
-AGENT_BACKENDS = ("codex", "claude", "gemini")
+AGENT_BACKENDS = ("codex", "claude", "gemini", "agy")
 
 # The three spellings of the single "where does the ElevenLabs key come from"
 # slot. A configuration layer that sets any one of them replaces the whole
@@ -233,9 +233,9 @@ class CommandsSettings:
 
 
 _STAGE_MODEL_DEFAULTS = {
-    "draft": {"codex": "gpt-6-luna", "claude": "sonnet", "gemini": "flash"},
-    "stream": {"codex": "gpt-6-luna", "claude": "sonnet", "gemini": "flash"},
-    "final": {"codex": "gpt-6.1-sol", "claude": "opus", "gemini": "pro"},
+    "draft": {"codex": "gpt-6-luna", "claude": "sonnet", "gemini": "flash", "agy": "gemini-4-hydrogen"},
+    "stream": {"codex": "gpt-6-luna", "claude": "sonnet", "gemini": "flash", "agy": "gemini-4-hydrogen"},
+    "final": {"codex": "gpt-6.1-sol", "claude": "opus", "gemini": "pro", "agy": "gemini-4-neon"},
 }
 _STAGE_EFFORT_DEFAULTS = {"draft": "medium", "stream": "low", "final": "medium"}
 
