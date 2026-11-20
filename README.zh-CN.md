@@ -479,8 +479,8 @@ Agent 的额外参数同样可通过 `agent.extra-options` 或各阶段的 `extr
 
 | 键 | 默认值 | 含义 / 可选值 |
 | --- | --- | --- |
-| `elevenlabs.model` | `"scribe_v2"` | 文件转录模型 ID。 |
-| `elevenlabs.realtime-model` | `"scribe_v2_realtime"` | 实时转录模型 ID。 |
+| `elevenlabs.model` | `"scribe_v3"` | 文件转录模型 ID。 |
+| `elevenlabs.realtime-model` | `"scribe_v3_live"` | 实时转录模型 ID。 |
 | `elevenlabs.diarize` | `true` | 文件转录时识别说话人。 |
 | `elevenlabs.num-speakers` | 未设置 | 预期说话人数，1 至 32 的整数；省略时自动估计。 |
 | `elevenlabs.use-speaker-library` | `true` | 在识别说话人的文件转录中使用服务的说话人库。 |
@@ -545,7 +545,7 @@ Agent 的额外参数同样可通过 `agent.extra-options` 或各阶段的 `extr
 | --- | --- | --- | --- | --- | --- |
 | `agent.draft` | `gpt-6-luna` | `sonnet` | `flash` | `gemini-4-hydrogen` | `medium` |
 | `agent.stream` | `gpt-6-luna` | `sonnet` | `flash` | `gemini-4-hydrogen` | `low` |
-| `agent.final` | `gpt-6.1-sol` | `opus` | `pro` | `gemini-4-neon` | `medium` |
+| `agent.final` | `gpt-6.2-sol` | `opus` | `pro` | `gemini-4-neon` | `medium` |
 
 各阶段独立解析共享项，优先级为：阶段设置 → `[agent]` → 阶段内置默认值。
 `[agent.stream]` 不从 `[agent.draft]` 继承，调优选项使用下表中的 stream 默认值。

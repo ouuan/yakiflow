@@ -45,7 +45,8 @@ def test_config_priority(tmp_path: Path) -> None:
     assert settings.agent.draft.workers == 7
     assert settings.output_mode == "source"
     assert settings.agent.draft.model == "gpt-6-luna"
-    assert settings.agent.final.model == "gpt-6.1-sol"
+    assert settings.agent.final.model == "gpt-6.2-sol"
+    assert settings.elevenlabs.realtime_model == "scribe_v3_live"
 
 
 def test_dedicated_flags_outrank_c_overrides(tmp_path: Path) -> None:
@@ -201,7 +202,7 @@ def test_stage_resolution_prefers_stage_then_shared_then_default() -> None:
     assert settings.agent.draft.backend == "claude"
     assert settings.agent.draft.model == "sonnet"
     assert settings.agent.final.backend == "codex"
-    assert settings.agent.final.model == "gpt-6.1-sol"
+    assert settings.agent.final.model == "gpt-6.2-sol"
     assert settings.agent.stream.backend == "codex"
     assert settings.agent.stream.model == "gpt-6-luna"
     # The shared effort outranks both stage defaults.

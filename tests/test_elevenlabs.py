@@ -456,7 +456,7 @@ def test_transcribe_sends_the_documented_parameters(tmp_path: Path) -> None:
     preview = asyncio.run(transcriber.transcribe(audio))
 
     call = client.speech_to_text.calls[0]
-    assert call["model_id"] == "scribe_v2"
+    assert call["model_id"] == "scribe_v3"
     assert call["language_code"] == "en"
     assert call["diarize"] is True
     assert call["num_speakers"] == 3

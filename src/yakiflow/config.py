@@ -99,8 +99,8 @@ class ElevenLabsSettings:
     api_key: str | None = None
     api_key_file: Path | None = _path()
     api_key_command: str | None = None
-    model: str = "scribe_v2"
-    realtime_model: str = "scribe_v2_realtime"
+    model: str = "scribe_v3"
+    realtime_model: str = "scribe_v3_live"
     diarize: bool = True
     num_speakers: int | None = None
     use_speaker_library: bool = True
@@ -235,7 +235,7 @@ class CommandsSettings:
 _STAGE_MODEL_DEFAULTS = {
     "draft": {"codex": "gpt-6-luna", "claude": "sonnet", "gemini": "flash", "agy": "gemini-4-hydrogen"},
     "stream": {"codex": "gpt-6-luna", "claude": "sonnet", "gemini": "flash", "agy": "gemini-4-hydrogen"},
-    "final": {"codex": "gpt-6.1-sol", "claude": "opus", "gemini": "pro", "agy": "gemini-4-neon"},
+    "final": {"codex": "gpt-6.2-sol", "claude": "opus", "gemini": "pro", "agy": "gemini-4-neon"},
 }
 _STAGE_EFFORT_DEFAULTS = {"draft": "medium", "stream": "low", "final": "medium"}
 

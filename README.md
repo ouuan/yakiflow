@@ -523,8 +523,8 @@ when that setting is omitted.
 
 | Key | Default | Meaning / accepted values |
 | --- | --- | --- |
-| `elevenlabs.model` | `"scribe_v2"` | File transcription model ID. |
-| `elevenlabs.realtime-model` | `"scribe_v2_realtime"` | Realtime transcription model ID. |
+| `elevenlabs.model` | `"scribe_v3"` | File transcription model ID. |
+| `elevenlabs.realtime-model` | `"scribe_v3_live"` | Realtime transcription model ID. |
 | `elevenlabs.diarize` | `true` | Recognize speakers in file transcription. |
 | `elevenlabs.num-speakers` | Unset | Expected speaker count, an integer from 1 to 32; omit for automatic estimation. |
 | `elevenlabs.use-speaker-library` | `true` | Use the service's speaker library during diarized file transcription. |
@@ -592,7 +592,7 @@ shared choice or `agent.final.backend` to override review only.
 | --- | --- | --- | --- | --- | --- |
 | `agent.draft` | `gpt-6-luna` | `sonnet` | `flash` | `gemini-4-hydrogen` | `medium` |
 | `agent.stream` | `gpt-6-luna` | `sonnet` | `flash` | `gemini-4-hydrogen` | `low` |
-| `agent.final` | `gpt-6.1-sol` | `opus` | `pro` | `gemini-4-neon` | `medium` |
+| `agent.final` | `gpt-6.2-sol` | `opus` | `pro` | `gemini-4-neon` | `medium` |
 
 Each stage resolves its shared keys independently: stage setting, then
 `[agent]`, then its built-in default. `[agent.stream]` does not inherit from

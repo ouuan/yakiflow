@@ -473,7 +473,7 @@ class ElevenLabsTranscriber(BatchTranscriber):
         return self._chunk_timeline.add(incoming)
 
 
-# --- realtime (Scribe v2 Realtime WebSocket) ---
+# --- realtime (Scribe WebSocket) ---
 
 # How far before the last durable word a broken realtime session resumes, and
 # how far apart two hearings of the same word may start and still be one word.
