@@ -101,16 +101,9 @@ class SubtitlePreviewApp(App[None]):
             return
         self._signature = signature
         table = self.query_one("#recent", SubtitleTable)
-        previous_y = table.scroll_y
-        follow_tail = table.follow_tail
-        table.clear()
-        for cue in read_subtitle(self.path):
-            table.add_subtitle(cue)
-        # Rebuilding the DataTable resets its virtual scroll extent. Keep
-        # the user's viewport stable across Agent edits, while preserving
-        # the existing live-tail behavior for users already at the end.
-        table.follow_tail = follow_tail
-        table.restore_scroll_after_update(previous_y)
+        table.replace_subtitles(read_subtitle(self.path))
+
+
 def main() -> int:
     if len(sys.argv) != 6:
         return 2

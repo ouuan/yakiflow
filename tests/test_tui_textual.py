@@ -191,17 +191,20 @@ def test_subtitle_tail_follow_tracks_user_intent() -> None:
             assert not table.follow_tail
             held_position = table.scroll_target_y
             table.add_subtitle(Cue("30", 30, 31, "cue 30"))
-            table.call_after_refresh(
-                table.scroll_to, y=held_position, animate=False, immediate=True
-            )
             await pilot.pause()
             assert table.scroll_target_y == held_position
 
+            visible_line = table._y_offsets[table.scroll_offset.y]
+            table.replace_subtitles([
+                Cue("intro", 0, 1, "new intro"),
+                *(Cue(str(index), index, index + 1, f"cue {index}") for index in range(31)),
+            ])
+            assert table.scroll_target_y == held_position
+            await pilot.pause()
+            assert table._y_offsets[table.scroll_offset.y] == visible_line
+
             table.user_scroll_end()
             table.add_subtitle(Cue("31", 31, 32, "cue 31"))
-            table.call_after_refresh(
-                table.scroll_end, animate=False, force=True, immediate=True
-            )
             await pilot.pause()
             assert table.follow_tail
             assert table.is_vertical_scroll_end
@@ -220,19 +223,31 @@ def test_live_subtitle_reload_preserves_user_scroll_position(tmp_path) -> None:
         async with app.run_test(size=(80, 20)) as pilot:
             await pilot.pause()
             table = app.query_one("#recent", SubtitleTable)
-            table.user_scroll_end()
-            table.user_scroll_page_up()
-            await pilot.pause()
+            assert table.is_vertical_scroll_end
+            await pilot.press("pageup")
             held_position = table.scroll_y
+            visible_line = table._y_offsets[table.scroll_offset.y]
             assert not table.follow_tail
 
             cues[20] = "updated cue 20 with a longer Agent correction"
             subtitle.write_text(_subtitle(cues), encoding="utf-8")
             app._refresh()
+            assert table.scroll_y == held_position
+            cues.append("another subtitle before the next frame")
+            subtitle.write_text(_subtitle(cues), encoding="utf-8")
+            app._refresh()
             await pilot.pause()
 
-            assert table.scroll_y == held_position
+            assert table.scroll_y > held_position
+            assert table._y_offsets[table.scroll_offset.y] == visible_line
             assert not table.follow_tail
+
+            await pilot.press("ctrl+end")
+            cues.append("new tail")
+            subtitle.write_text(_subtitle(cues), encoding="utf-8")
+            app._refresh()
+            await pilot.pause()
+            assert table.is_vertical_scroll_end
 
     asyncio.run(exercise())
 

@@ -267,6 +267,13 @@ class FollowTailMixin:
 class SubtitleTable(FollowTailMixin, DataTable, can_focus=True):
     """Virtualized subtitle rows, keyed by the stable Whisper cue ID."""
 
+    action_cursor_up = FollowTailMixin.user_scroll_up
+    action_cursor_down = FollowTailMixin.user_scroll_down
+    action_page_up = FollowTailMixin.user_scroll_page_up
+    action_page_down = FollowTailMixin.user_scroll_page_down
+    action_scroll_top = FollowTailMixin.user_scroll_home
+    action_scroll_bottom = FollowTailMixin.user_scroll_end
+
     def __init__(self, *, show_speaker: bool = False, **kwargs):
         super().__init__(
             show_cursor=False, cursor_type="none", zebra_stripes=True,
@@ -282,6 +289,7 @@ class SubtitleTable(FollowTailMixin, DataTable, can_focus=True):
         self.add_column("Source", width=30, key="source")
         self.add_column("Translation", width=30, key="translation")
         self._init_follow_tail()
+        self._measured_offsets = []
 
     def on_resize(self, event: events.Resize) -> None:
         source_width, translation_width = subtitle_text_widths(
@@ -302,7 +310,7 @@ class SubtitleTable(FollowTailMixin, DataTable, can_focus=True):
         self._update_count += 1
         self._remeasure_rows(self.rows)
 
-    def add_subtitle(self, cue: Cue) -> None:
+    def _subtitle_cells(self, cue: Cue) -> list[Text]:
         cells = [
             subtitle_cell(subtitle_ordinal(cue), no_wrap=True),
             subtitle_cell(format_start_time(cue.start), no_wrap=True),
@@ -311,24 +319,32 @@ class SubtitleTable(FollowTailMixin, DataTable, can_focus=True):
             cells.append(subtitle_cell(cue.speaker or ""))
         cells.append(subtitle_cell(cue.source))
         cells.append(subtitle_cell((cue.translated or "").strip()))
-        self.add_row(*cells, height=None, key=cue.id)
+        return cells
+
+    def add_subtitle(self, cue: Cue) -> None:
+        self.add_row(*self._subtitle_cells(cue), height=None, key=cue.id)
 
     def update_subtitle(self, cue: Cue) -> None:
-        self.update_cell(
-            cue.id, "ordinal", subtitle_cell(subtitle_ordinal(cue), no_wrap=True)
-        )
-        self.update_cell(
-            cue.id, "start", subtitle_cell(format_start_time(cue.start), no_wrap=True)
-        )
-        if self.show_speaker:
-            self.update_cell(cue.id, "speaker", subtitle_cell(cue.speaker or ""))
-        self.update_cell(cue.id, "source", subtitle_cell(cue.source))
-        self.update_cell(
-            cue.id,
-            "translation",
-            subtitle_cell((cue.translated or "").strip()),
-        )
-        self._remeasure_rows([cue.id])
+        changed = False
+        for column, cell in zip(self.columns, self._subtitle_cells(cue)):
+            if self.get_cell(cue.id, column) != cell:
+                self.update_cell(cue.id, column, cell)
+                changed = True
+        if changed:
+            self._remeasure_rows([cue.id])
+
+    def replace_subtitles(self, cues: list[Cue]) -> None:
+        previous = list(self.rows)
+        common = 0
+        for key, cue in zip(previous, cues):
+            if key != cue.id:
+                break
+            self.update_subtitle(cue)
+            common += 1
+        for key in previous[common:]:
+            self.remove_row(key)
+        for cue in cues[common:]:
+            self.add_subtitle(cue)
 
     def _remeasure_rows(self, row_keys) -> None:
         # Textual auto-measures newly added rows, but currently exposes no
@@ -337,11 +353,35 @@ class SubtitleTable(FollowTailMixin, DataTable, can_focus=True):
             row = self.rows.get(row_key)
             if row is None or not row.auto_height:
                 continue
-            row.height = 0
             self._new_rows.add(row.key)
         self._require_update_dimensions = True
         self.check_idle()
         self.refresh(layout=True)
+
+    def _update_dimensions(self, new_rows) -> None:
+        """Keep the last displayed cue and line in view across a layout pass."""
+        position = self.scroll_offset.y
+        anchor = (
+            self._measured_offsets[position]
+            if not self.follow_tail and position < len(self._measured_offsets)
+            else None
+        )
+        for key in new_rows:
+            if key in self.rows and self.rows[key].auto_height:
+                self.rows[key].height = 0
+        if new_rows:
+            self._update_count += 1
+        super()._update_dimensions(new_rows)
+        self._measured_offsets = self._y_offsets
+        if self.follow_tail:
+            position = self.max_scroll_y
+        elif anchor is not None and anchor[0] in self.rows:
+            key, line = anchor
+            region = self._get_row_region(self.get_row_index(key))
+            header = self.header_height if self.show_header else 0
+            position = region.y - header + min(line, region.height - 1)
+        if position != self.scroll_offset.y:
+            self.scroll_to(y=position, animate=False, force=True, immediate=True)
 
 
 class AgentConversationLog(FollowTailMixin, RichLog):
@@ -755,22 +795,20 @@ class YakiFlowApp(App[None]):
         # would otherwise focus it automatically, sending the global
         # arrow/page bindings to the log instead of this panel.
         self.query_one("#recent", SubtitleTable).focus()
-        self._load_existing_subtitles()
+        self._replace_subtitles(None)
         self._drive_worker = self.run_worker(self._drive(), exclusive=True)
 
-    def _load_existing_subtitles(self) -> None:
-        """Load the durable subtitle timeline into the subtitle table."""
-        table = self.query_one("#recent", SubtitleTable)
-        # The database orders by insertion ordinal, which mid-draft on a
-        # resumed word-mode job is batch-completion order, not time order.
-        for cue in sorted(
-            self.job.db.list_cues(stable_only=True),
-            key=lambda cue: (cue.start, cue.end, cue.speaker or ""),
-        ):
-            table.add_subtitle(cue)
-            self.whisper_cues += 1
-            if cue.translated:
-                self.processed_ids.add(cue.id)
+    def _replace_subtitles(self, cues: list[Cue] | None) -> None:
+        if cues is None:
+            # The database orders by insertion ordinal, which mid-draft on a
+            # resumed word-mode job is batch-completion order, not time order.
+            cues = sorted(
+                self.job.db.list_cues(stable_only=True),
+                key=lambda cue: (cue.start, cue.end, cue.speaker or ""),
+            )
+        self.query_one("#recent", SubtitleTable).replace_subtitles(cues)
+        self.whisper_cues = len(cues)
+        self.processed_ids = {cue.id for cue in cues if cue.translated}
 
     def on_unmount(self) -> None:
         self.job.listener = None
@@ -838,25 +876,14 @@ class YakiFlowApp(App[None]):
             progress.update(progress=event.progress * 100)
             progress.set_estimated_remaining(event.estimated_remaining)
         if event.kind == "timeline-replaced":
-            table = self.query_one("#recent", SubtitleTable)
-            previous_y = table.scroll_y
-            table.clear(columns=False)
-            self.whisper_cues = 0
-            self.processed_ids.clear()
+            self._replace_subtitles(event.cues)
             if event.cues is not None:
-                for cue in event.cues:
-                    table.add_subtitle(cue)
-                    self.whisper_cues += 1
-                    if cue.translated:
-                        self.processed_ids.add(cue.id)
                 status = (
                     f"Agent processed: {len(self.processed_ids)}"
                     f" / {self.whisper_cues} subtitles"
                 )
             else:
-                self._load_existing_subtitles()
                 status = f"aligned timeline: {self.whisper_cues} subtitles"
-            table.restore_scroll_after_update(previous_y)
             self.query_one("#status", Static).update(f"Current stage · {status}")
             return
         if event.kind in {"transcript", "subtitle"} and event.cue:
@@ -864,8 +891,6 @@ class YakiFlowApp(App[None]):
             is_new = event.cue.id not in table.rows
             if is_new:
                 self.whisper_cues += 1
-            previous_y = table.scroll_y
-            if is_new:
                 table.add_subtitle(event.cue)
             else:
                 table.update_subtitle(event.cue)
@@ -875,7 +900,6 @@ class YakiFlowApp(App[None]):
             else:
                 status = f"Whisper subtitles: {self.whisper_cues} · waiting for Agent"
             self.query_one("#status", Static).update(f"Current stage · {status}")
-            table.restore_scroll_after_update(previous_y)
         else:
             self.query_one("#status", Static).update(f"Current stage · {event.message}")
         if event.kind in {"warning", "failed"}:
